@@ -107,22 +107,25 @@ def export_llm_config(
 
 
 def pick_runner(
-    arch: sizing.Architecture, context: int, tiers: tuple[settings.RunnerTier, ...]
+    arch: sizing.Architecture, context: int, tiers: tuple[settings.RunnerTier, ...], backend: str = BACKEND
 ) -> settings.RunnerTier | None:
     """The smallest tier that can export this window, or None if none can.
 
     A tier that holds the whole need in RAM is preferred: the masks and the fp32 weights
     are touched on every pass of torch.export and lowering, so a window that leans on swap
-    runs at the pager's speed. Swap is spent only when no tier has the RAM. The budget is
-    host_budget's, RAM plus swap less the reserve, which the job measures again on the
-    runner and gates on with the same host_need_bytes.
+    runs at the pager's speed. When no tier has the RAM, the one with the most RAM that
+    holds the need with swap is taken, not the smallest: Qwen2.5-3B at 32k measured 101.5
+    GiB, which a 62 GiB runner with 64 GiB of swap would technically hold by paging 40 GiB.
+    The budget is host_budget's, RAM plus swap less the reserve, which the job measures
+    again on the runner and gates on with the same host_need_bytes.
     """
-    need = sizing.host_need_bytes(arch, context)
-    for with_swap in (False, True):
-        for tier in tiers:
-            swap = tier.swap_gib * 1024**3 if with_swap else 0
-            if need <= tier.ram_bytes + swap - RESERVE_BYTES:
-                return tier
+    need = sizing.host_need_bytes(arch, context, backend)
+    for tier in tiers:
+        if need <= tier.ram_bytes - RESERVE_BYTES:
+            return tier
+    for tier in reversed(tiers):
+        if need <= tier.ram_bytes + tier.swap_gib * 1024**3 - RESERVE_BYTES:
+            return tier
     return None
 
 
@@ -152,7 +155,9 @@ def run(
     arch = families.architecture(source.config, source.total_params)
     host = host_info()
     budget = host_budget(host)
-    choice = sizing.choose_context(arch, cfg.context_tiers, cfg.device_budget_bytes, cfg.runtime_overhead_bytes, budget)
+    choice = sizing.choose_context(
+        arch, cfg.context_tiers, cfg.device_budget_bytes, cfg.runtime_overhead_bytes, budget, backend
+    )
     # Every tier is exported, one job per window; the app and the benchmarker decide what
     # fits a phone (the estimate goes into the report as fits_phone_budget). Only the host
     # limit is a gate: past it the runner VM is killed outright, with no Python error.
@@ -168,7 +173,7 @@ def run(
         # The same headroom choose_context applies. Comparing the raw estimate here let
         # Qwen3-1.7B at 32k through (44.9 GiB against 46.5) after the headroom was added,
         # and every workflow job takes this path, because each one passes --context.
-        need = sizing.host_need_bytes(arch, context)
+        need = sizing.host_need_bytes(arch, context, backend)
         if budget is not None and need > budget:
             raise SkipExport(
                 f"a {context}-token export needs about {need:,} B with headroom (causal masks alone "

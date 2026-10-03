@@ -126,6 +126,44 @@ so the app's `CompiledBackend.of` reads "vulkan". The Linux wheel's runner has n
 kernels and the runner no GPU, so the check is structural (`smoke.structural_check`:
 `forward` delegates to `VulkanBackend`); quality and speed are measured on the devices.
 
+- **Runners, per window** (2026-10-04): the export peak grows with the window squared (the
+  same per-layer causal masks as XNNPACK), so one fixed 8vcpu runner could not carry any 32k
+  window of Qwen3, Qwen2.5 or Llama-3.2-3B. The `targets` job runs `export-matrix`, which
+  gives each window the smallest x86 tier in `vulkan.runner_tiers` that holds
+  `sizing.host_need_bytes(..., "vulkan")` in RAM, or, when none can, the tier with the most
+  RAM that holds it with swap. The job gates on the same number.
+- **Vulkan memory, measured** (50 exports: Qwen3 0.6B/1.7B/4B/4B-2507, Qwen2.5 0.5B/1.5B/
+  Math-1.5B/3B, Llama 3.2 1B/3B, each at 2k-32k, all published): against the XNNPACK
+  estimate the peak was 0.76-0.97x up to 8k, 0.99-1.55x at 16k and 1.54-2.13x at 32k, so the
+  1.7x headroom both over-sized small windows (Qwen3-4B at 2k peaked at 16.9 GiB and was
+  sent to 16vcpu) and under-predicted 32k in eight of ten models. The Vulkan need counts the
+  masks 2.6 times plus a 10% margin (`VULKAN_MASK_COPIES`, `VULKAN_NEED_MARGIN`), which
+  covers all fifty; the worst is Qwen2.5-Math-1.5B at 32k, 82.4 GiB measured. Runners
+  report 30.9 / 62.0 / 113.4-124.2 GiB of RAM for the 8 / 16 / 32vcpu tiers, and the tiers
+  use the smallest of each, not the nominal 32 / 64 / 128 GB.
+- **Qwen3-4B at 32k is past every x86 runner's RAM**: 115.5 GiB measured (113.4 for the
+  2507 finetune) with 0 B left available on the 32vcpu tier, the largest Blacksmith has. It
+  finished on that tier's 96 GiB of swap. There is no tier to move it to; a regression of a
+  few GiB in lowering would make it fail, and the job would say so (its window is not
+  refused, because RAM plus swap still covers the need).
+- **32k files do not fit a 12 GB phone**: Qwen3-0.6B at 32k loaded on the POCO X8 Pro Max
+  and was killed while allocating its 7.5 GB fp32 KV cache; a second attempt took adb down
+  with it. Its `config.json` variant already says `fits_phone_budget: false`, as do Qwen3-4B
+  from 8k up.
+- **The forced-window gate had no headroom**: 122b7bb added the 1.7x factor to
+  `choose_context` only, and every workflow job passes `--context`, which still compared the
+  raw estimate. Both now read `host_need_bytes`; this also applies to XNNPACK.
+- **The app cannot load these files yet.** The `executorch-android` 1.4.0 AAR that
+  openweights and ExecuServe ship registers `XnnpackBackend` only (its `libexecutorch.so`
+  has no `VulkanBackend`); a Vulkan `.pte` fails there with "backend not registered". Maven
+  has `org.pytorch:executorch-android-vulkan:1.4.0`, which registers both, so the app needs
+  that artifact before its `vulkan` folder is usable.
+- **First device run** (2026-10-04, POCO X8 Pro Max, MT6991, Mali GPU): Qwen3-0.6B at 2k,
+  `llama_main` from ExecuTorch v1.4.0 built for Android with Vulkan + XNNPACK. Correct
+  answer ("Paris"); 18.1 tok/s decode and 44 tok/s prefill against XNNPACK's 52 and 126 on
+  the same phone. With one CPU thread Vulkan decodes at 18.7 and XNNPACK drops to 32, so the
+  work is on the GPU. The file is 616 MB against XNNPACK's 497 MB.
+
 ### QNN (phase 3)
 
 No source build: the executorch 1.4.0 Linux x86_64 wheel ships the Qualcomm backend

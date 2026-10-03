@@ -84,22 +84,26 @@ export:
     embedding_quantize: "8,0"
     embedding_hqq: false
     # x86 Blacksmith runners, smallest first; export_xnnpack.pick_runner gives each window
-    # the first that holds sizing.host_need_bytes (the estimate times the 1.7 headroom) in
-    # RAM, and only spends swap when no tier can. The cost is the window, not the model:
-    # every attention layer holds a window x window mask, so Qwen3-4B needs ~33 GiB at 2k
-    # and ~108 GiB at 32k, and one fixed size either wastes the small windows or kills the
-    # wide ones. x86 rather than ARM for the 128 GB tier (ARM tops out at 96 GB).
+    # the first that holds sizing.host_need_bytes in RAM, and when none can, the one with the
+    # most RAM that holds it with swap. The cost is the window, not the model: every
+    # attention layer holds a window x window mask, so Qwen3-4B needs ~22 GiB at 2k and ~134
+    # GiB at 32k, and one fixed size either wastes the small windows or kills the wide ones.
+    # x86 rather than ARM for the largest tier (ARM tops out at 96 GB).
+    #
+    # ram_bytes is the smallest MemTotal the runners reported in fifty Vulkan exports
+    # (2026-10-04), not the nominal size: the 32vcpu tier is sold as 128 GB and reported
+    # 113.4 to 124.2 GiB, and 8vcpu and 16vcpu reported 30.9 and 62.0 GiB every time.
     runner_tiers:
       - label: blacksmith-8vcpu-ubuntu-2404
-        ram_bytes: 32000000000
+        ram_bytes: 33229729792
         disk_bytes: 160000000000
         swap_gib: 24
       - label: blacksmith-16vcpu-ubuntu-2404
-        ram_bytes: 64000000000
+        ram_bytes: 66577858560
         disk_bytes: 750000000000
         swap_gib: 64
       - label: blacksmith-32vcpu-ubuntu-2404
-        ram_bytes: 128000000000
+        ram_bytes: 121766014976
         disk_bytes: 1500000000000
         swap_gib: 96
   qnn:

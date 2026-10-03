@@ -119,10 +119,26 @@ def export_peak_bytes(arch: Architecture, context: int) -> int:
     )
 
 
-def host_need_bytes(arch: Architecture, context: int) -> int:
-    """What a runner must hold to export this window: the estimate plus the headroom it is
-    known to run under by. Every gate and every runner choice compares this, not the raw
-    estimate, so the matrix and the job cannot disagree about a window."""
+# Vulkan lowering holds the per-layer causal masks about two and a half times over at the
+# widest windows, so a flat factor on the XNNPACK estimate is wrong at both ends: fifty
+# Vulkan exports (Qwen3 0.6B-4B, Qwen2.5 0.5B-3B, Llama 3.2 1B/3B at 2k-32k, 2026-10-04)
+# measured 0.76-0.97x of the estimate up to 8k, so 1.7x sent small windows to runners twice
+# their size, and 1.54-2.13x at 32k, past the 1.7x headroom in eight of ten models. Counting
+# the masks 2.6 times bounds all fifty (worst: Qwen2.5-Math-1.5B at 32k, 82.4 GiB measured
+# against 83.5 predicted); the margin covers run-to-run spread, which reached 9% between
+# Qwen2.5-1.5B and its Math variant, the same architecture at the same window.
+VULKAN_MASK_COPIES = 2.6
+VULKAN_NEED_MARGIN = 1.1
+
+
+def host_need_bytes(arch: Architecture, context: int, backend: str = "xnnpack") -> int:
+    """What a runner must hold to export this window. Every gate and every runner choice
+    compares this, not the raw estimate, so the matrix and the job cannot disagree about a
+    window. XNNPACK: the estimate plus the headroom it is known to run under by. Vulkan: the
+    estimate with the masks counted VULKAN_MASK_COPIES times, plus a margin."""
+    if backend == "vulkan":
+        extra_masks = (VULKAN_MASK_COPIES - 1) * causal_mask_bytes(arch, context)
+        return int((export_peak_bytes(arch, context) + extra_masks) * VULKAN_NEED_MARGIN)
     return int(export_peak_bytes(arch, context) * HOST_PEAK_HEADROOM)
 
 
@@ -139,6 +155,7 @@ def choose_context(
     device_budget: int,
     runtime_overhead: int,
     host_budget: int | None,
+    backend: str = "xnnpack",
 ) -> WindowChoice:
     """Largest tier whose phone residency and host export peak both fit."""
     rows = []
@@ -147,7 +164,7 @@ def choose_context(
         resident = device_resident_bytes(arch, context, runtime_overhead)
         peak = export_peak_bytes(arch, context)
         fits_device = resident <= device_budget
-        fits_host = host_budget is None or host_need_bytes(arch, context) <= host_budget
+        fits_host = host_budget is None or host_need_bytes(arch, context, backend) <= host_budget
         rows.append(
             {
                 "context": context,

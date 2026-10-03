@@ -197,8 +197,8 @@ def _export_matrix(args) -> int:
 
     entries = []
     for window in sorted({int(v) for v in wanted}, reverse=True):
-        need = sizing.host_need_bytes(arch, window)
-        tier = export_xnnpack.pick_runner(arch, window, recipe.runner_tiers)
+        need = sizing.host_need_bytes(arch, window, args.backend)
+        tier = export_xnnpack.pick_runner(arch, window, recipe.runner_tiers, args.backend)
         if tier is None:
             print(f"no runner tier can build a {window}-token window (needs {need:,} B)", file=sys.stderr)
             continue
