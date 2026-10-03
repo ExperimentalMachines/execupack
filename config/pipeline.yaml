@@ -76,6 +76,21 @@ export:
     # built on two hosted runners differs in the embedding's low bits and small models decode
     # different text. Affine is deterministic; leave this false to keep builds reproducible.
     embedding_hqq: false
+    # The same x86 tiers as vulkan.runner_tiers (see there for the measured RAM), picked per
+    # window by export_xnnpack.pick_runner on sizing.host_need_bytes(..., "xnnpack").
+    runner_tiers:
+      - label: blacksmith-8vcpu-ubuntu-2404
+        ram_bytes: 33229729792
+        disk_bytes: 160000000000
+        swap_gib: 24
+      - label: blacksmith-16vcpu-ubuntu-2404
+        ram_bytes: 66577858560
+        disk_bytes: 750000000000
+        swap_gib: 64
+      - label: blacksmith-32vcpu-ubuntu-2404
+        ram_bytes: 121766014976
+        disk_bytes: 1500000000000
+        swap_gib: 96
   vulkan:
     # The GPU delegate runs the same torchao 8da4w linears (backends/vulkan/vulkan-quantization);
     # the file is otherwise the XNNPACK recipe with backend.vulkan in export_llm.

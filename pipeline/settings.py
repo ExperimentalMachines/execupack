@@ -136,6 +136,7 @@ def load() -> Settings:
             group_size=int(export["xnnpack"]["group_size"]),
             embedding_quantize=str(export["xnnpack"]["embedding_quantize"]),
             embedding_hqq=bool(export["xnnpack"].get("embedding_hqq", False)),
+            runner_tiers=runner_tiers(export["xnnpack"]),
         ),
         vulkan=XnnpackRecipe(
             qmode=export["vulkan"]["qmode"],

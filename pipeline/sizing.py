@@ -136,10 +136,14 @@ def host_need_bytes(arch: Architecture, context: int, backend: str = "xnnpack") 
     compares this, not the raw estimate, so the matrix and the job cannot disagree about a
     window. XNNPACK: the estimate plus the headroom it is known to run under by. Vulkan: the
     estimate with the masks counted VULKAN_MASK_COPIES times, plus a margin."""
+    extra_masks = (VULKAN_MASK_COPIES - 1) * causal_mask_bytes(arch, context)
+    masks_counted = int((export_peak_bytes(arch, context) + extra_masks) * VULKAN_NEED_MARGIN)
     if backend == "vulkan":
-        extra_masks = (VULKAN_MASK_COPIES - 1) * causal_mask_bytes(arch, context)
-        return int((export_peak_bytes(arch, context) + extra_masks) * VULKAN_NEED_MARGIN)
-    return int(export_peak_bytes(arch, context) * HOST_PEAK_HEADROOM)
+        return masks_counted
+    # XNNPACK's 1.7x was measured on windows up to 16k and two hybrid 32k exports. The same
+    # eager model and masks are what Vulkan measured 1.54-2.13x on at 32k, so the larger of
+    # the two stands until XNNPACK's own 32k peaks for attention-only models are measured.
+    return max(int(export_peak_bytes(arch, context) * HOST_PEAK_HEADROOM), masks_counted)
 
 
 @dataclass(frozen=True)
