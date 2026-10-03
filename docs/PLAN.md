@@ -197,10 +197,26 @@ calling ExecuTorch's own script in compile-only mode:
   lists; without it the second run needed ~35 min per prompt and could not finish
   (docs/research, finding 17). Values are unchanged; `export_mtk` refuses an unpatched
   script.
-- **Families:** the scripts build the model from `config.json`'s `model_type`, so any Qwen3
-  or Qwen2.5 size works, not a fixed list. Llama 3.2 (the scripts read
-  `rope_scaling['type']`, its config has `rope_type: llama3`), SmolLM2 (tokenizer class) and
-  Gemma 3 (`gemma3_text` vs `gemma3`) wait for validation.
+- **Families:** the scripts build the model from `config.json`'s `model_type`, so any size
+  works, not a fixed list. Qwen3 (`qwen.py`), Llama 3.2 and SmolLM2 (`llama.py`, with
+  `"tokenizer": "pretrained_fast"` written into the config, SmolLM2 calibrating in ChatML)
+  are exported; Gemma 3 (`gemma3_text` vs `gemma3`) waits for validation.
+- **Stock RoPE was wrong** (2026-10-04, finding 37): `get_master_rot_emb` used base 10000
+  because neither `QwenConfig` nor `LlamaConfig` kept `rope_theta`, and it had no Llama 3
+  frequency scaling. In the fp32 graph, before quantization, Qwen3-0.6B was at KL 0.082 and
+  93% top-1 against Hugging Face. `mediatek-rope-theta.patch` fixes both; Qwen3-0.6B,
+  Llama-3.2-1B and SmolLM2-135M then match Hugging Face exactly, and the export refuses a
+  tree without it.
+- **Qwen2.5 is refused**: MediaTek's runner masks with an additive -100, which Qwen2.5's
+  unnormalised attention scores leak through (fp32 KL 0.013, 98% top-1, exact at -10000).
+  The constant is the runner's, and a larger one stretches the 16-bit range of the scores,
+  so it needs a runner and graph change, not an export setting.
+- **One calibration row at a time**: `calibration_bytes` assumed `writer_batch_size=1`, but
+  only the old `lfm2.py` ever passed it; `qwen.py` buffered every prompt. The calibration
+  patch now adds it to `qwen.py` and `llama.py`. Even so, a prompt's ten steps each hold a
+  full fp32 cache at the window, so Qwen3 at 32k (about 285 GB for the 0.6B), Qwen3-4B from
+  16k and Llama-3.2-3B at 32k fit no hosted runner and are left out of the matrix; the
+  streaming calibration `lfm2.py` uses would lift that.
 - **Output** per chip: the chunk `.pte` files, the fp32 token embedding table the runner
   reads from disk, and `config.json` with the flags MediaTek's LLM runner
   (`examples/mediatek/executor_runner`) needs. They do not run on `TextLLMRunner`.
