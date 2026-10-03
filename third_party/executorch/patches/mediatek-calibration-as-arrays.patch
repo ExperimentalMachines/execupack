@@ -1,8 +1,31 @@
---- a/examples/mediatek/model_export_scripts/qwen.py
-+++ b/examples/mediatek/model_export_scripts/qwen.py
-@@ -505,6 +505,10 @@
+--- a/examples/mediatek/model_export_scripts/llama.py
++++ b/examples/mediatek/model_export_scripts/llama.py
+@@ -503,7 +503,15 @@ def main():
+                 "eos_token_id_tensor": torch.tensor(tokenizer.eos_token_id),
                  "response_cap": args.response_cap,
              },
++            # exe-expo: each row is one prompt's every step, each a full fp32 KV cache at the
++            # window; the default writer_batch_size of 1000 kept all of them resident before
++            # any reached Arrow. One row at a time is what export_mtk.calibration_bytes sizes.
++            writer_batch_size=1,
+         )
++        # exe-expo: read the prepared tensors back as arrays. Without a format, iterating
++        # the dataset decodes every row (all chunks' fp32 KV caches) into nested Python
++        # lists, which thrashes swap on a 16 GB host; the values are the same.
++        cal_dataset = cal_dataset.with_format("numpy")
+ 
+     for chunk_idx, chunk in enumerate(models):
+         export_to_et_ir(
+--- a/examples/mediatek/model_export_scripts/qwen.py
++++ b/examples/mediatek/model_export_scripts/qwen.py
+@@ -504,7 +504,15 @@ def main():
+                 "eos_token_id_tensor": torch.tensor(tokenizer.eos_token_id),
+                 "response_cap": args.response_cap,
+             },
++            # exe-expo: each row is one prompt's every step, each a full fp32 KV cache at the
++            # window; the default writer_batch_size of 1000 kept all of them resident before
++            # any reached Arrow. One row at a time is what export_mtk.calibration_bytes sizes.
++            writer_batch_size=1,
          )
 +        # exe-expo: read the prepared tensors back as arrays. Without a format, iterating
 +        # the dataset decodes every row (all chunks' fp32 KV caches) into nested Python

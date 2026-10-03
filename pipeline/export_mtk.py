@@ -92,6 +92,12 @@ WEIGHT_BYTES_PER_PARAM = 6
 # calibration reads every prepared row back as nested Python lists, ~35 min per prompt on
 # the hosted runner (docs/research, finding 17).
 PATCH_MARKER = 'cal_dataset = cal_dataset.with_format("numpy")'
+# calibration_bytes sizes one prompt's steps; without this the scripts buffer every prompt.
+WRITER_MARKER = "writer_batch_size=1,"
+# mediatek-rope-theta.patch: the configs keep rope_theta (and Llama 3's frequency scaling),
+# which get_master_rot_emb otherwise replaces with 10000 (docs/research, finding 37).
+ROPE_MARKER = 'self.rope_theta = float(kwargs.pop("rope_theta", 10000.0) or 10000.0)'
+ROPE_CONFIGS = {"qwen.py": "configuration_qwen.py", "llama.py": "configuration_llama.py"}
 # third_party/executorch/patches/mediatek-lfm2.patch: lfm2.py calibrates every chunk in one
 # streaming pass over the long-context corpus (pipeline/mtk_corpus.py) and keeps no step, so
 # the Arrow round trip and the arrays patch do not apply to it.
@@ -419,8 +425,13 @@ def run(
         )
     if plan.script in PER_LAYER_STATE_SCRIPTS and PER_LAYER_STATE_MARKER not in script.read_text(encoding="utf-8"):
         raise ExportError(f"{script} lacks the per-layer states in third_party/executorch/patches/mediatek-lfm2.patch")
-    if not streaming and PATCH_MARKER not in script.read_text(encoding="utf-8"):
+    script_text = script.read_text(encoding="utf-8")
+    if not streaming and (PATCH_MARKER not in script_text or WRITER_MARKER not in script_text):
         raise ExportError(f"{script} lacks third_party/executorch/patches/mediatek-calibration-as-arrays.patch")
+    if plan.script in ROPE_CONFIGS:
+        config_file = examples_dir / "models" / "llm_models" / ROPE_CONFIGS[plan.script]
+        if ROPE_MARKER not in config_file.read_text(encoding="utf-8"):
+            raise ExportError(f"{config_file} lacks third_party/executorch/patches/mediatek-rope-theta.patch")
 
     output_repo = naming.output_repo(model_id, cfg.hub_org, cfg.repo_suffix)
     folder = naming.mtk_folder(soc)
@@ -488,6 +499,10 @@ def run(
     started = time.time()
     hub.download(source, weight_dir)
     tokenizer, licenses = copy_side_files(source, weight_dir, out_dir)
+    if plan.tokenizer:
+        model_config = json.loads((weight_dir / "config.json").read_text(encoding="utf-8"))
+        model_config["tokenizer"] = plan.tokenizer
+        (weight_dir / "config.json").write_text(json.dumps(model_config, indent=2), encoding="utf-8")
     bos, eos = hub.special_token_ids(source)
 
     corpus = None

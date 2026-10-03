@@ -454,3 +454,32 @@ def test_streaming_windows_go_to_the_cores_that_finish_them():
     biggest = CFG.mtk.runner_tiers[-1]
     at_32k = dataclasses.replace(CFG.mtk, cache_size=32768)
     assert export_mtk.calibration_bytes(LFM26, at_32k, 23, 2_697_198_592, streaming=True) < biggest.ram_bytes
+
+
+def test_llama_family_uses_mediateks_llama_script_with_the_fast_tokenizer():
+    llama32 = load_json("llama-3.2-1b-instruct.config.json")
+    # Llama 3's frequency scaling is implemented by mediatek-rope-theta.patch.
+    assert families.mtk_plan(families.family_for(llama32), llama32, 4) == families.MtkPlan(
+        "llama.py", "llama3.json", 4, "pretrained_fast"
+    )
+    smollm2 = load_json("smollm2-135m.config.json")
+    # SmolLM2 is plain RoPE and speaks ChatML, so it calibrates in that template.
+    assert families.mtk_plan(families.family_for(smollm2), smollm2, 4) == families.MtkPlan(
+        "llama.py",
+        "qwen.json",
+        3,
+        "pretrained_fast",  # 30 layers: three chunks of ten
+    )
+
+
+def test_the_patches_carry_what_the_export_checks_for():
+    patches = settings.ROOT / "third_party/executorch/patches"
+    calibration = (patches / "mediatek-calibration-as-arrays.patch").read_text(encoding="utf-8")
+    for script in ("qwen.py", "llama.py"):
+        assert f"+++ b/examples/mediatek/model_export_scripts/{script}" in calibration
+    added = [line[1:].strip() for line in calibration.splitlines() if line.startswith("+")]
+    assert export_mtk.WRITER_MARKER in added
+    rope = (patches / "mediatek-rope-theta.patch").read_text(encoding="utf-8")
+    assert sum(export_mtk.ROPE_MARKER in line for line in rope.splitlines() if line.startswith("+")) == 2
+    for config in export_mtk.ROPE_CONFIGS.values():
+        assert f"+++ b/examples/mediatek/models/llm_models/{config}" in rope
