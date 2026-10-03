@@ -18,6 +18,7 @@ Produces, under ``out_dir`` (the layout of the published HF repo):
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shutil
@@ -46,6 +47,14 @@ from pipeline.exporting import (
 )
 
 BACKEND = "xnnpack"
+# Recipe label (file name, report) -> export_llm's qmode. 8da4w: dynamic int8 activations,
+# int4 weights in groups. fp32: the linears are not quantized at all (embeddings still int8),
+# for models too small to keep their decisions at 4 bits: SmolLM2-360M's GPTQ file failed
+# the gate on 2 of 4 quiet rows. ExecuTorch 1.4.0's XNNPACK path has nothing in between:
+# its torchao:8daXw patterns are refused alongside XNNPACK delegation, and qmode int8 fails
+# in ConvertToLinearPass.
+QMODES = {"8da4w": "8da4w", "fp32": None}
+
 BACKEND_CONFIG = {
     "xnnpack": {"xnnpack": {"enabled": True, "extended_ops": True}},
     "vulkan": {"vulkan": {"enabled": True}},
@@ -88,7 +97,7 @@ def export_llm_config(
             "enable_dynamic_shape": True,
         },
         "quantization": {
-            "qmode": recipe.qmode,
+            "qmode": QMODES[recipe.qmode],
             "group_size": recipe.group_size,
             "embedding_quantize": recipe.embedding_quantize,
             # Only the embedding reads this. torchao's HQQ search for its scales is
@@ -139,6 +148,7 @@ def run(
     skip_smoke: bool = False,
     backend: str = BACKEND,
     codes: Path | None = None,
+    qmode: str | None = None,
 ) -> dict:
     if backend not in BACKEND_CONFIG:
         raise ExportError(f"unknown backend {backend!r}; this exporter builds {sorted(BACKEND_CONFIG)}")
@@ -182,6 +192,12 @@ def run(
     resident = sizing.device_resident_bytes(arch, window, cfg.runtime_overhead_bytes)
 
     recipe = cfg.xnnpack if backend == "xnnpack" else cfg.vulkan
+    if qmode:
+        if qmode not in QMODES:
+            raise ExportError(f"qmode {qmode!r}; this exporter builds {sorted(QMODES)}")
+        if codes is not None and qmode != "8da4w":
+            raise ExportError("solved codes are int4; a GPTQ run exports 8da4w")
+        recipe = dataclasses.replace(recipe, qmode=qmode)
     output_repo = naming.output_repo(model_id, cfg.hub_org, cfg.repo_suffix)
     # The recipe goes in the file name, and a solve is a different recipe from rounding: a
     # reader, and a repository holding both, must be able to tell them apart. export_llm
@@ -289,7 +305,7 @@ def run(
             "converter": plan.converter,
             "params": plan.params,
             "qmode": qmode_label,
-            "export_llm_qmode": recipe.qmode,
+            "export_llm_qmode": QMODES[recipe.qmode],
             "group_size": recipe.group_size,
             "embedding_quantize": recipe.embedding_quantize,
             "embedding_hqq": recipe.embedding_hqq,

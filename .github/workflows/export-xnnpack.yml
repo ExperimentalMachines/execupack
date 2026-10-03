@@ -20,6 +20,10 @@ on:
         description: Solve the int4 codes with GPTQ instead of rounding them (one solve, reused by every window)
         default: true
         type: boolean
+      qmode:
+        description: "Recipe: empty for the config's 8da4w, or fp32 (linears not quantized; the solve only writes the gate's fp32 reference)"
+        default: ""
+        type: string
       publish_hf:
         description: Publish to the Hugging Face org in config/pipeline.yaml
         default: true
@@ -86,6 +90,7 @@ jobs:
       HF_HUB_DISABLE_PROGRESS_BARS: "1"
       MODEL_ID: ${{ inputs.model_id }}
       REVISION: ${{ inputs.revision }}
+      QMODE: ${{ inputs.qmode }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -95,7 +100,9 @@ jobs:
 
       - name: Solve the int4 codes
         run: |
-          python -m pipeline solve "$MODEL_ID" --revision "$REVISION" \
+          ONLY=""
+          if [ -n "$QMODE" ] && [ "$QMODE" != "8da4w" ]; then ONLY="--reference-only"; fi
+          python -m pipeline solve "$MODEL_ID" --revision "$REVISION" $ONLY \
             --out "$WORK_DIR/codes.pt" --work "$WORK_DIR/solve-work" | tee "$WORK_DIR/solve.json"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -126,6 +133,7 @@ jobs:
       HF_HUB_DISABLE_PROGRESS_BARS: "1"
       MODEL_ID: ${{ inputs.model_id }}
       REVISION: ${{ inputs.revision }}
+      QMODE: ${{ inputs.qmode }}
       CONTEXT: ${{ matrix.entry.context }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -149,7 +157,7 @@ jobs:
           CODES=""
           if [ -f "$WORK_DIR/codes.pt" ]; then CODES="--codes $WORK_DIR/codes.pt"; fi
           python -m pipeline export-xnnpack "$MODEL_ID" --revision "$REVISION" --context "$CONTEXT" \
-            --out "$WORK_DIR/out" --work "$WORK_DIR/work" $CODES --skip-smoke
+            --out "$WORK_DIR/out" --work "$WORK_DIR/work" $CODES --qmode "$QMODE" --skip-smoke
           rc=$?
           set -e
           if [ "$rc" -eq 4 ]; then

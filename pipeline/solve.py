@@ -321,7 +321,9 @@ def solve_model(model, rows, damp: float = 0.01, act_quant: bool = True, log=pri
     return codes
 
 
-def run(model_id: str, revision: str, out: Path, work_dir: Path, damp: float = 0.01) -> dict:
+def run(
+    model_id: str, revision: str, out: Path, work_dir: Path, damp: float = 0.01, reference_only: bool = False
+) -> dict:
     """Solve one model's int4 codes and write them to ``out``.
 
     One solve serves every window: the codes are per linear, and the window changes only the
@@ -369,6 +371,16 @@ def run(model_id: str, revision: str, out: Path, work_dir: Path, damp: float = 0
     print(f"    fp32 is confident on {reference['confident']} of {len(reference['rows'])} gate rows")
     del fp32, generate
     gc.collect()
+    if reference_only:
+        # A recipe that is not solved (8da8w) still has to decide like fp32 before it
+        # publishes, so the reference is all this run writes.
+        return {
+            "model_id": model_id,
+            "revision": source.sha,
+            "reference_only": True,
+            "gate_rows": len(reference["rows"]),
+            "gate_confident_rows": reference["confident"],
+        }
 
     print("==> building the eager model")
     model = eager_model(plan.model_class, plan.params, checkpoint, work_dir)
