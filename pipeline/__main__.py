@@ -164,6 +164,50 @@ def _mtk_matrix(args) -> int:
     return 0
 
 
+def _export_matrix(args) -> int:
+    """One matrix entry per window for an export_llm backend: the window and the smallest
+    runner that can build it (export_xnnpack.pick_runner), from the model's config alone.
+
+    The job re-measures its host and gates on the same sizing.host_need_bytes, so a window
+    this sends to a tier is one the job will not refuse, and one no tier can carry is left
+    out here instead of being started on a runner it would kill.
+    """
+    from pipeline import export_xnnpack, families, hub, settings, sizing
+
+    cfg = settings.load()
+    recipe = cfg.vulkan if args.backend == "vulkan" else cfg.xnnpack
+    if not recipe.runner_tiers:
+        print(f"no runner_tiers configured for {args.backend} in config/pipeline.yaml", file=sys.stderr)
+        return 2
+    source = hub.fetch(args.model, args.revision)
+    family = families.family_for(source.config) if source.config else None
+    if family is None or not source.total_params:
+        print(f"no known family or parameter count for {args.model}", file=sys.stderr)
+        return 2
+    arch = families.architecture(source.config, source.total_params)
+    if args.contexts:
+        try:
+            wanted = json.loads(args.contexts)
+        except ValueError:
+            wanted = [v for v in args.contexts.strip("[]").split(",") if v.strip()]
+        if not isinstance(wanted, list):
+            wanted = [wanted]
+    else:
+        wanted = list(cfg.context_tiers)
+
+    entries = []
+    for window in sorted({int(v) for v in wanted}, reverse=True):
+        need = sizing.host_need_bytes(arch, window)
+        tier = export_xnnpack.pick_runner(arch, window, recipe.runner_tiers)
+        if tier is None:
+            print(f"no runner tier can build a {window}-token window (needs {need:,} B)", file=sys.stderr)
+            continue
+        print(f"{window}: {tier.label}, needs {need / 2**30:.1f} GiB", file=sys.stderr)
+        entries.append({"context": window, "runner": tier.label, "swap_gib": tier.swap_gib})
+    print(json.dumps(entries))
+    return 0
+
+
 def _export_mtk(args) -> int:
     from pipeline import export_mtk
 
@@ -358,6 +402,15 @@ def main(argv: list[str] | None = None) -> int:
         "counts the real file and its disk gate catches a mismatch",
     )
     matrix.set_defaults(func=_mtk_matrix)
+
+    export_matrix = commands.add_parser(
+        "export-matrix", help="windows and the runner each needs for an export_llm backend, as a CI matrix"
+    )
+    export_matrix.add_argument("model")
+    export_matrix.add_argument("--revision", default="main")
+    export_matrix.add_argument("--backend", default="vulkan", choices=["vulkan", "xnnpack"])
+    export_matrix.add_argument("--contexts", default="", help="JSON or comma-separated windows; empty for every tier")
+    export_matrix.set_defaults(func=_export_matrix)
 
     watch = commands.add_parser("watch", help="check the watched orgs, dispatch exports, update state")
     watch.add_argument("--state", required=True, help="state JSON (on the state branch)")

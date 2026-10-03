@@ -148,3 +148,14 @@ def test_the_headroom_is_the_worst_ratio_actually_measured():
     # 24 published reports carry both the estimate and host.peak_in_use_bytes. The estimate
     # runs under in 18 of them, by a median of 1.13x and a worst case of 1.70x.
     assert sizing.HOST_PEAK_HEADROOM >= 1.7
+
+
+def test_every_gate_compares_the_same_need():
+    # choose_context, the forced --context gate in export_xnnpack.run and the workflow's
+    # runner choice all read host_need_bytes; the forced gate used to compare the raw
+    # estimate, which is how Qwen3-1.7B at 32k (44.9 GiB raw, 76.3 with headroom) still
+    # reached a 46.5 GiB runner after the headroom was added.
+    qwen = arch("Qwen/Qwen3-1.7B")
+    raw = sizing.export_peak_bytes(qwen, 32768)
+    assert sizing.host_need_bytes(qwen, 32768) == int(raw * sizing.HOST_PEAK_HEADROOM)
+    assert raw < RUNNER_BUDGET < sizing.host_need_bytes(qwen, 32768)

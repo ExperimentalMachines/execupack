@@ -29,6 +29,7 @@ import yaml
 
 from pipeline import convert, eligibility, families, hub, manifest, naming, settings, sizing, smoke
 from pipeline.exporting import (
+    RESERVE_BYTES,
     ExportError,
     MemorySampler,
     SkipExport,
@@ -105,6 +106,26 @@ def export_llm_config(
     }
 
 
+def pick_runner(
+    arch: sizing.Architecture, context: int, tiers: tuple[settings.RunnerTier, ...]
+) -> settings.RunnerTier | None:
+    """The smallest tier that can export this window, or None if none can.
+
+    A tier that holds the whole need in RAM is preferred: the masks and the fp32 weights
+    are touched on every pass of torch.export and lowering, so a window that leans on swap
+    runs at the pager's speed. Swap is spent only when no tier has the RAM. The budget is
+    host_budget's, RAM plus swap less the reserve, which the job measures again on the
+    runner and gates on with the same host_need_bytes.
+    """
+    need = sizing.host_need_bytes(arch, context)
+    for with_swap in (False, True):
+        for tier in tiers:
+            swap = tier.swap_gib * 1024**3 if with_swap else 0
+            if need <= tier.ram_bytes + swap - RESERVE_BYTES:
+                return tier
+    return None
+
+
 def run(
     model_id: str,
     revision: str,
@@ -144,10 +165,13 @@ def run(
     else:
         window = context
         window_reason = f"requested window {context}"
-        peak = sizing.export_peak_bytes(arch, context)
-        if budget is not None and peak > budget:
+        # The same headroom choose_context applies. Comparing the raw estimate here let
+        # Qwen3-1.7B at 32k through (44.9 GiB against 46.5) after the headroom was added,
+        # and every workflow job takes this path, because each one passes --context.
+        need = sizing.host_need_bytes(arch, context)
+        if budget is not None and need > budget:
             raise SkipExport(
-                f"a {context}-token export needs about {peak:,} B (causal masks alone "
+                f"a {context}-token export needs about {need:,} B with headroom (causal masks alone "
                 f"{sizing.causal_mask_bytes(arch, context):,} B); this host has {budget:,} B"
             )
     resident = sizing.device_resident_bytes(arch, window, cfg.runtime_overhead_bytes)

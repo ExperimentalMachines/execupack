@@ -48,6 +48,7 @@ def test_no_window_given_means_the_largest_the_host_can_build(tmp_path, qwen3_1_
 
 
 def test_vulkan_shares_the_recipe_and_only_swaps_the_delegate(tmp_path):
+    import dataclasses
     from pathlib import Path
 
     from conftest import hf_config
@@ -62,7 +63,8 @@ def test_vulkan_shares_the_recipe_and_only_swaps_the_delegate(tmp_path):
     assert vulkan["backend"] == {"vulkan": {"enabled": True}}
     assert xnnpack["backend"] == {"xnnpack": {"enabled": True, "extended_ops": True}}
     assert {k: v for k, v in vulkan.items() if k != "backend"} == {k: v for k, v in xnnpack.items() if k != "backend"}
-    assert cfg.vulkan == cfg.xnnpack
+    # Same quantization recipe; only Vulkan carries per-window runner tiers.
+    assert dataclasses.replace(cfg.vulkan, runner_tiers=()) == cfg.xnnpack
     # The app reads the backend from the name: the Vulkan file says so, the XNNPACK folder does.
     repo = naming.output_repo("Qwen/Qwen3-1.7B", cfg.hub_org, cfg.repo_suffix)
     name = naming.cpu_gpu_file("Qwen/Qwen3-1.7B", "vulkan", "8da4w", 4096)

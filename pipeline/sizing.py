@@ -119,6 +119,13 @@ def export_peak_bytes(arch: Architecture, context: int) -> int:
     )
 
 
+def host_need_bytes(arch: Architecture, context: int) -> int:
+    """What a runner must hold to export this window: the estimate plus the headroom it is
+    known to run under by. Every gate and every runner choice compares this, not the raw
+    estimate, so the matrix and the job cannot disagree about a window."""
+    return int(export_peak_bytes(arch, context) * HOST_PEAK_HEADROOM)
+
+
 @dataclass(frozen=True)
 class WindowChoice:
     context: int | None
@@ -140,7 +147,7 @@ def choose_context(
         resident = device_resident_bytes(arch, context, runtime_overhead)
         peak = export_peak_bytes(arch, context)
         fits_device = resident <= device_budget
-        fits_host = host_budget is None or peak * HOST_PEAK_HEADROOM <= host_budget
+        fits_host = host_budget is None or host_need_bytes(arch, context) <= host_budget
         rows.append(
             {
                 "context": context,
