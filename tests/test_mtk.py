@@ -303,6 +303,18 @@ def test_the_runner_is_sized_by_the_window_and_both_limits_bind():
     assert need > biggest.ram_bytes
     assert need < biggest.ram_bytes + biggest.swap_gib * 1024**3
 
+    # A window past every tier's RAM goes to the tier with the most RAM, not to the smallest
+    # that swap can stretch to: Qwen2.5-3B at 32k (36 layers, 2 KV heads of 128) needs about
+    # 110 GB, which the 64 GB tier with 64 GiB of swap would also "carry".
+    qwen25_3b = {
+        "num_hidden_layers": 36,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 2,
+        "head_dim": 128,
+        "hidden_size": 2048,
+    }
+    assert pick(qwen25_3b, 32768, 3_085_938_688) == biggest.label
+
 
 def test_no_runner_tier_is_arm_because_the_toolchain_is_x86_only():
     # mtk_converter is a cp310 manylinux x86_64 wheel and mtk_neuron is tagged

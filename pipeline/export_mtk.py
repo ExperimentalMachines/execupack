@@ -277,10 +277,15 @@ def pick_runner(
         fast_enough = not streaming or tier.max_window is None or recipe.cache_size <= tier.max_window
         return need_ram <= ram * RUNNER_HEADROOM and need_disk <= tier.disk_bytes - swap and fast_enough
 
-    for with_swap in (False, True):
-        for tier in recipe.runner_tiers:
-            if carries(tier, with_swap=with_swap):
-                return tier
+    for tier in recipe.runner_tiers:
+        if carries(tier, with_swap=False):
+            return tier
+    # Past every tier's RAM, the tier with the most RAM pages the least, so swap is tried
+    # largest first. Smallest first sent Qwen2.5-3B at 32k (about 110 GB) to the 64 GB tier,
+    # which carries it only by paging half of every calibration step.
+    for tier in reversed(recipe.runner_tiers):
+        if carries(tier, with_swap=True):
+            return tier
     return None
 
 
