@@ -255,6 +255,17 @@ def _publish_hf(args) -> int:
     return 0
 
 
+def _correct_reports(args) -> int:
+    import subprocess
+
+    from pipeline import correct
+
+    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    for repo in args.repos:
+        print(json.dumps(correct.correct_repo(repo, commit or "unknown", dry_run=not args.apply), indent=2))
+    return 0
+
+
 def _publish_release(args) -> int:
     from pipeline import publish
 
@@ -431,6 +442,15 @@ def main(argv: list[str] | None = None) -> int:
         "--requeue", action="store_true", help="put every dispatched export back in the queue (after cancelling runs)"
     )
     watch.set_defaults(func=_watch)
+
+    fix = commands.add_parser(
+        "correct-reports", help="rewrite fp32 reports' recipe and sizing fields on the Hub; never touches a .pte"
+    )
+    fix.add_argument(
+        "repos", nargs="+", help="output repos, e.g. experimentalmachines/SmolLM2-360M-Instruct-ExecuTorch"
+    )
+    fix.add_argument("--apply", action="store_true", help="commit the corrections (default: report what would change)")
+    fix.set_defaults(func=_correct_reports)
 
     for name, func, text in (
         ("publish-hf", _publish_hf, "commit one backend folder to the output HF repo"),

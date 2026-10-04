@@ -138,7 +138,9 @@ def pick_runner(
     return None
 
 
-def recipe_fields(recipe, qmode_label: str, solved: bool, backend: str, prefill_chunk: int) -> dict:
+def recipe_fields(
+    recipe, qmode_label: str, solved: bool, backend: str, prefill_chunk: int, executorch: str | None = None
+) -> dict:
     """The report's description of how the weights are stored, true to the recipe built.
 
     8da4w: dynamic int8 activations and int4 weights in groups, the codes rounded to nearest or
@@ -147,6 +149,8 @@ def recipe_fields(recipe, qmode_label: str, solved: bool, backend: str, prefill_
     every reader of the report, and of the README built from it, that its weights were 4-bit.
     """
     delegate = "XNNPACK with extended ops" if backend == "xnnpack" else "the Vulkan delegate"
+    # A correction describes the toolchain the file was built with, not the one running now.
+    version = executorch or toolchain()["executorch"]
     common = {
         "qmode": qmode_label,
         "embedding_quantize": recipe.embedding_quantize,
@@ -160,7 +164,7 @@ def recipe_fields(recipe, qmode_label: str, solved: bool, backend: str, prefill_
             "int4_codes": None,
             "label": "fp32 linears, int8 embeddings",
             "description": (
-                f"ExecuTorch {toolchain()['executorch']} `export_llm`: fp32 weights and activations in every "
+                f"ExecuTorch {version} `export_llm`: fp32 weights and activations in every "
                 f"linear (not quantized), int8 per-channel embeddings, {delegate}, prefill chunk "
                 f"{prefill_chunk}, fp32 KV cache."
             ),
@@ -174,7 +178,7 @@ def recipe_fields(recipe, qmode_label: str, solved: bool, backend: str, prefill_
             + (", int4 codes solved with GPTQ" if solved else ", int4 codes rounded to nearest")
         ),
         "description": (
-            f"ExecuTorch {toolchain()['executorch']} `export_llm`: 8-bit dynamic activations "
+            f"ExecuTorch {version} `export_llm`: 8-bit dynamic activations "
             f"and 4-bit weights in groups of {recipe.group_size}, int8 per-channel embeddings, "
             f"{delegate}, prefill chunk {prefill_chunk}, fp32 KV cache."
         ),
