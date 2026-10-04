@@ -19,7 +19,7 @@ for it, Samsung Exynos (ENN). iOS is deferred.
 | Outputs | Hugging Face Hub, GitHub Releases (files ≤ 2 GiB), Actions artifacts |
 | HF layout | One repo per model, backend folders; NPU exports published even though the app can't load them yet |
 | Context window | Every window of 2k/4k/8k/16k/32k, per model and backend, one workflow job each; the app and the benchmarker decide what fits a device. A window the runner cannot build is skipped and reported, not failed |
-| Runtime pin | ExecuTorch **1.4.0** everywhere; QAIRT **2.37.0** (what `executorch-android-qnn:1.4.0` depends on) |
+| Runtime pin | ExecuTorch **1.5.1** everywhere since 2026-10-04 (1.4.0 before; PR #6, after the apps moved to the 1.5.1 runtime); QAIRT **2.37.0**, unchanged by 1.5.1 |
 | Vendor SDKs | Downloaded from the vendor at run time, cached only in this repo's Actions cache, never re-hosted |
 
 ## Hugging Face repo layout
@@ -153,16 +153,24 @@ kernels and the runner no GPU, so the check is structural (`smoke.structural_che
 - **The forced-window gate had no headroom**: 122b7bb added the 1.7x factor to
   `choose_context` only, and every workflow job passes `--context`, which still compared the
   raw estimate. Both now read `host_need_bytes`; this also applies to XNNPACK.
-- **The app cannot load these files yet.** The `executorch-android` 1.4.0 AAR that
-  openweights and ExecuServe ship registers `XnnpackBackend` only (its `libexecutorch.so`
-  has no `VulkanBackend`); a Vulkan `.pte` fails there with "backend not registered". Maven
-  has `org.pytorch:executorch-android-vulkan:1.4.0`, which registers both, so the app needs
-  that artifact before its `vulkan` folder is usable.
+- **The apps load these files since 2026-10-04.** The plain `executorch-android` AAR
+  registers `XnnpackBackend` only (its `libexecutorch.so` has no `VulkanBackend`), so a
+  Vulkan `.pte` could not load in either app. Both now ship
+  `org.pytorch:executorch-android-vulkan:1.5.1`, which registers both, and offer `vulkan/`
+  files only on phones that report Vulkan 1.1 and whose GPU has not refused a Vulkan model
+  in the runtime's own words (openweights `55e4f68`, ExecuServe `c67ec10`).
 - **First device run** (2026-10-04, POCO X8 Pro Max, MT6991, Mali GPU): Qwen3-0.6B at 2k,
   `llama_main` from ExecuTorch v1.4.0 built for Android with Vulkan + XNNPACK. Correct
   answer ("Paris"); 18.1 tok/s decode and 44 tok/s prefill against XNNPACK's 52 and 126 on
   the same phone. With one CPU thread Vulkan decodes at 18.7 and XNNPACK drops to 32, so the
   work is on the GPU. The file is 616 MB against XNNPACK's 497 MB.
+- **Through the apps, on three GPUs** (2026-10-04, finding 38): Qwen3-0.6B 2k is correct on a
+  Mali-G925 (Poco), an Adreno 750 (SM8650) and the SM8850's Adreno, in openweights' nine
+  engine tests and served by ExecuServe. Whether it is faster than the XNNPACK file depends on
+  the GPU: on Mali the CPU file decodes about three times faster; on the SM8850 the GPU reads a
+  long prompt 1.4 to 1.9 times as fast but decodes short replies at 0.7 times the CPU's
+  speed. Exporting Vulkan stays worth it; which file a phone should use is the app's call.
+  The study and its raw logs are in openweights, `docs/research/vulkan-on-device.md`.
 
 ### QNN (phase 3)
 
@@ -260,6 +268,13 @@ calling ExecuTorch's own script in compile-only mode:
   (`examples/mediatek/executor_runner`) needs. They do not run on `TextLLMRunner`.
 - **Check:** structural; every chunk loads, has its two methods, and delegates to
   `NeuropilotBackend`.
+- **16k needs one attention layer per chunk** (2026-10-04, finding 39). LFM2.5-1.2B at 16k in
+  4 chunks (two attention layers in some chunks) lost MediaTek's compiler service while
+  compiling chunk 2; in 8 chunks (at most one attention layer each) it built in 54 min with a
+  13.4 GiB peak on 16 vCPU. The 2.6B needs 10 chunks for the same rule and built at 16k in
+  98 min with a 24.7 GiB peak. Pass `max_chunks` per dispatch; `mtk.max_chunks` stays 4 for
+  the smaller windows, which build as they are. 32k was started for all three LFM2.5 models
+  and cancelled mid-calibration for budget, so whether it builds is not known.
 - **First export** (2026-09-13, not published): Qwen3-0.6B, MT6991, 512-token cache, all 9
   prompts, structural check passed. 4 chunks (3 x 86 MB, 165 MB with the output layer) plus
   a 622 MB fp32 embedding table, 1.05 GB in all. Export 1,695 s, calibration 43% of it.
@@ -374,7 +389,7 @@ G5, Dimensity 9300+, Exynos 2500; GSM8K, RetrievalQA, IFEval, PopQA, BFCL, Fresh
 | XNNPACK | done | Qwen3, Qwen2.5, Llama 3.2, SmolLM2; Gemma 3 and SmolLM3 are not in 1.4.0's `export_llm` model list |
 | Qualcomm (SM8650, SM8750) | done | registry checkpoints only, one fixed window |
 | MediaTek (MT6989, MT6991) | phase 4 | `mtk_converter` wheel, NeuroPilot SDK |
-| Vulkan | absent | 1.4.0's `export_llm` has `backend.vulkan.enabled` and a `vulkan_8w` qmode, so it is an XNNPACK-shaped job (S/M); the app's `CompiledBackend` already reads `vulkan` |
+| Vulkan | done | Qwen3, Qwen2.5, Llama 3.2 and SmolLM2 published at 2k-32k; the apps load them since 2026-10-04 (`executorch-android-vulkan` 1.5.1) and they run on Mali and Adreno GPUs (finding 38) |
 | CoreML / iOS | absent | 1.4.0's `export_llm` has `backend.coreml` (ios 15-18, `coreml_*` qmodes); needs a macOS runner and iOS naming/tags in the app (M) |
 | Samsung Exynos | absent | 1.4.0 ships `backends/samsung` (`EnnBackend`) but no LLM example for it (L, upstream-bound) |
 | Tensor G5 | n/a | no ExecuTorch delegate for the Tensor TPU: it runs XNNPACK (or Vulkan) files |

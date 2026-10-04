@@ -21,7 +21,7 @@ on:
         default: ""
         type: string
       max_chunks:
-        description: Maximum chunks to divide the model into (1, 2, 4); empty for mtk.max_chunks in config/pipeline.yaml
+        description: Maximum chunks to divide the model into (16k needs at most one attention layer per chunk, e.g. 8 for LFM2.5-1.2B, 10 for the 2.6B); empty for mtk.max_chunks in config/pipeline.yaml
         default: ""
         type: string
       precision:
