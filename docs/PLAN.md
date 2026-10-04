@@ -167,7 +167,8 @@ kernels and the runner no GPU, so the check is structural (`smoke.structural_che
 - **Through the apps, on three GPUs** (2026-10-04, finding 38): Qwen3-0.6B 2k is correct on a
   Mali-G925 (Poco), an Adreno 750 (SM8650) and the SM8850's Adreno, in openweights' nine
   engine tests and served by ExecuServe. Whether it is faster than the XNNPACK file depends on
-  the GPU: on Mali the CPU file decodes about three times faster; on the SM8850 the GPU reads a
+  the GPU: on Mali the CPU file decodes 2.2 to 3.7 times faster at every length and the GPU
+  only reads long prompts faster (1.2 to 1.5 times); on the SM8850 the GPU reads a
   long prompt 1.4 to 1.9 times as fast but decodes short replies at 0.7 times the CPU's
   speed. Exporting Vulkan stays worth it; which file a phone should use is the app's call.
   The study and its raw logs are in openweights, `docs/research/vulkan-on-device.md`.
