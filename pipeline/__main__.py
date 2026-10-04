@@ -22,7 +22,7 @@ def _plan(args) -> int:
         arch = families.architecture(source.config, source.total_params)
         budget = host_budget(host_info())
         choice = sizing.choose_context(
-            arch, cfg.context_tiers, cfg.device_budget_bytes, cfg.runtime_overhead_bytes, budget
+            arch, cfg.context_tiers, cfg.device_budget_bytes, cfg.runtime_overhead_bytes, budget, qmode=args.qmode
         )
         result["windows"] = {
             "exportable_on_this_host": [row["context"] for row in choice.table if row["fits_host"]],
@@ -301,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     plan = commands.add_parser("plan", help="eligibility and window choice for one model, no download")
     plan.add_argument("model")
     plan.add_argument("--revision", default="main")
+    plan.add_argument("--qmode", default="8da4w", help="recipe to size the phone estimate for: 8da4w or fp32")
     plan.set_defaults(func=_plan)
 
     export = commands.add_parser("export-xnnpack", help="download, convert, export and smoke-test")

@@ -1,3 +1,4 @@
+import pytest
 from conftest import TOTAL_PARAMS, hf_config, load_json
 
 from pipeline import families, sizing
@@ -157,3 +158,20 @@ def test_every_gate_compares_the_same_need():
     raw = sizing.export_peak_bytes(qwen, 32768)
     assert sizing.host_need_bytes(qwen, 32768) >= int(raw * sizing.HOST_PEAK_HEADROOM)
     assert raw < RUNNER_BUDGET < sizing.host_need_bytes(qwen, 32768)
+
+
+def test_the_fp32_recipe_is_sized_at_four_bytes_a_linear_weight():
+    smol = arch("HuggingFaceTB/SmolLM2-360M-Instruct")
+    # Embedding 47,185,920 x 1 + linears 361,758,720 x 4 + 2,048 x 64 x 16 = 1,496,317,952 before the
+    # overhead factor. Measured 1,496,334,720 B (dcd6288, local export at 2k): within 0.002%.
+    raw = smol.embedding_params + smol.linear_params * 4 + 2048 * smol.head_dim * 16
+    assert raw == 1_496_317_952
+    assert abs(raw - 1_496_334_720) / 1_496_334_720 < 1e-4
+    assert sizing.pte_bytes_estimate(smol, 2048, "fp32") == int(raw * sizing.PTE_OVERHEAD_FACTOR)
+    # The same model at 8da4w is the size the fp32 file's reports wrongly carried.
+    assert sizing.pte_bytes_estimate(smol, 2048) < sizing.pte_bytes_estimate(smol, 2048, "fp32") / 4
+    fp32 = sizing.choose_context(smol, TIERS, BUDGET, OVERHEAD, None, qmode="fp32")
+    int4 = sizing.choose_context(smol, TIERS, BUDGET, OVERHEAD, None)
+    assert fp32.table[-1]["device_resident_bytes"] > int4.table[-1]["device_resident_bytes"]
+    with pytest.raises(ValueError, match="no size model"):
+        sizing.pte_bytes_estimate(smol, 2048, "int8")

@@ -98,3 +98,15 @@ def test_the_fp32_recipe_leaves_the_linears_unquantized():
     assert built["quantization"]["embedding_quantize"] == cfg.xnnpack.embedding_quantize
     # export_llm's own enum value for the default recipe passes through unchanged.
     assert export_xnnpack.QMODES["8da4w"] == "8da4w"
+
+
+def test_an_fp32_report_does_not_claim_int4_weights():
+    cfg = settings.load()
+    fp32 = export_xnnpack.recipe_fields(dataclasses.replace(cfg.xnnpack, qmode="fp32"), "fp32", False, "xnnpack", 2048)
+    assert fp32["int4_codes"] is None and fp32["group_size"] is None
+    assert "4-bit" not in fp32["description"] and "int4" not in fp32["label"]
+    assert "not quantized" in fp32["description"] and fp32["embedding_quantize"] == cfg.xnnpack.embedding_quantize
+    rtn = export_xnnpack.recipe_fields(cfg.xnnpack, "8da4w", False, "xnnpack", 2048)
+    gptq = export_xnnpack.recipe_fields(cfg.xnnpack, "8da4w-gptq", True, "xnnpack", 2048)
+    assert rtn["int4_codes"] == "round-to-nearest" and gptq["int4_codes"] == "gptq"
+    assert "4-bit weights in groups of" in rtn["description"] and rtn["group_size"] == cfg.xnnpack.group_size

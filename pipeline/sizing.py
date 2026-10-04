@@ -12,6 +12,10 @@ FP32_BYTES = 4
 # 8da4w with group size 32: half a byte per 4-bit weight plus 2 bytes of scale per group
 # of 32 (2 / 32 = 0.0625 bytes per weight).
 LINEAR_BYTES_PER_PARAM_8DA4W_G32 = 0.5 + 2 / 32
+# Bytes per linear weight in each XNNPACK recipe the exporter builds (export_xnnpack.QMODES).
+# fp32 leaves the linears unquantized; its embedding is still int8. SmolLM2-360M fp32 at 2k
+# measured 1,496,334,720 B against 1,496,317,952 B from these terms before the overhead factor.
+LINEAR_BYTES_PER_PARAM = {"8da4w": LINEAR_BYTES_PER_PARAM_8DA4W_G32, "fp32": float(FP32_BYTES)}
 # int8 per-channel embedding table: one byte per weight (one scale per row is negligible).
 EMBEDDING_BYTES_PER_PARAM_INT8 = 1.0
 # RoPE cos/sin tables grow the file with the window: Qwen3-0.6B measured 496,570,368 B at
@@ -73,17 +77,24 @@ def kv_cache_bytes(arch: Architecture, context: int) -> int:
     return arch.attending * 2 * arch.n_kv_heads * arch.head_dim * context * FP32_BYTES
 
 
-def pte_bytes_estimate(arch: Architecture, context: int) -> int:
+def linear_bytes_per_param(qmode: str) -> float:
+    try:
+        return LINEAR_BYTES_PER_PARAM[qmode]
+    except KeyError:
+        raise ValueError(f"no size model for qmode {qmode!r}; known: {sorted(LINEAR_BYTES_PER_PARAM)}") from None
+
+
+def pte_bytes_estimate(arch: Architecture, context: int, qmode: str = "8da4w") -> int:
     raw = (
         arch.embedding_params * EMBEDDING_BYTES_PER_PARAM_INT8
-        + arch.linear_params * LINEAR_BYTES_PER_PARAM_8DA4W_G32
+        + arch.linear_params * linear_bytes_per_param(qmode)
         + context * arch.head_dim * ROPE_TABLE_BYTES_PER_TOKEN_PER_HEAD_DIM
     )
     return int(raw * PTE_OVERHEAD_FACTOR)
 
 
-def device_resident_bytes(arch: Architecture, context: int, overhead: int) -> int:
-    return pte_bytes_estimate(arch, context) + kv_cache_bytes(arch, context) + overhead
+def device_resident_bytes(arch: Architecture, context: int, overhead: int, qmode: str = "8da4w") -> int:
+    return pte_bytes_estimate(arch, context, qmode) + kv_cache_bytes(arch, context) + overhead
 
 
 def causal_mask_bytes(arch: Architecture, context: int) -> int:
@@ -160,12 +171,14 @@ def choose_context(
     runtime_overhead: int,
     host_budget: int | None,
     backend: str = "xnnpack",
+    qmode: str = "8da4w",
 ) -> WindowChoice:
-    """Largest tier whose phone residency and host export peak both fit."""
+    """Largest tier whose phone residency and host export peak both fit. `qmode` sizes the
+    linears: an fp32 file holds them at four bytes a weight, eight times an 8da4w one."""
     rows = []
     chosen = None
     for context in sorted(tiers, reverse=True):
-        resident = device_resident_bytes(arch, context, runtime_overhead)
+        resident = device_resident_bytes(arch, context, runtime_overhead, qmode)
         peak = export_peak_bytes(arch, context)
         fits_device = resident <= device_budget
         fits_host = host_budget is None or host_need_bytes(arch, context, backend) <= host_budget
