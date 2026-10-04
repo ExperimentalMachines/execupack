@@ -167,10 +167,10 @@ kernels and the runner no GPU, so the check is structural (`smoke.structural_che
 - **Through the apps, on three GPUs** (2026-10-04, finding 38): Qwen3-0.6B 2k is correct on a
   Mali-G925 (Poco), an Adreno 750 (SM8650) and the SM8850's Adreno, in openweights' nine
   engine tests and served by ExecuServe. Whether it is faster than the XNNPACK file depends on
-  the GPU: on Mali the CPU file decodes 2.2 to 3.7 times faster at every length and the GPU
-  only reads long prompts faster (1.2 to 1.5 times); on the SM8850 the GPU reads a
-  long prompt 1.4 to 1.9 times as fast but decodes short replies at 0.7 times the CPU's
-  speed. Exporting Vulkan stays worth it; which file a phone should use is the app's call.
+  the GPU: on the Poco's Mali-G925 the CPU file decodes 2.2 to 3.9 times faster at both
+  measured prompt lengths and the GPU only reads long prompts faster (1.1 to 1.6 times); on
+  the SM8850 the GPU reads a long prompt 1.2 to 2.0 times as fast but decodes short replies at
+  0.6 to 0.75 times the CPU's speed. One model (Qwen3-0.6B), one phone per GPU. Exporting Vulkan stays worth it; which file a phone should use is the app's call.
   The study and its raw logs are in openweights, `docs/research/vulkan-on-device.md`.
 
 ### QNN (phase 3)
@@ -269,12 +269,14 @@ calling ExecuTorch's own script in compile-only mode:
   (`examples/mediatek/executor_runner`) needs. They do not run on `TextLLMRunner`.
 - **Check:** structural; every chunk loads, has its two methods, and delegates to
   `NeuropilotBackend`.
-- **16k needs one attention layer per chunk** (2026-10-04, finding 39). LFM2.5-1.2B at 16k in
-  4 chunks (two attention layers in some chunks) lost MediaTek's compiler service while
-  compiling chunk 2; in 8 chunks (at most one attention layer each) it built in 54 min with a
-  13.4 GiB peak on 16 vCPU. The 2.6B needs 10 chunks for the same rule and built at 16k in
-  98 min with a 24.7 GiB peak. Pass `max_chunks` per dispatch; `mtk.max_chunks` stays 4 for
-  the smaller windows, which build as they are. 32k was started for all three LFM2.5 models
+- **16k built with one attention layer per chunk** (2026-10-04, finding 39). LFM2.5-1.2B-Instruct
+  at 16k in 4 chunks (two attention layers in some chunks) lost MediaTek's compiler service
+  while compiling chunk 2. The 1.2B-Instruct-heretic, the same architecture, built in 8 chunks
+  (at most one attention layer each) in 54 min with a 13.4 GiB peak on 16 vCPU, and the
+  2.6B-heretic in 10 chunks in 98 min with a 24.7 GiB peak. Base LFM2.5-2.6B at 16k is still
+  unbuilt. One attention layer per chunk is a working rule for these two architectures, not a
+  shown cause. Pass `max_chunks` per dispatch; `mtk.max_chunks` stays 4 for the smaller
+  windows, which build as they are. 32k was started for all three LFM2.5 models
   and cancelled mid-calibration for budget, so whether it builds is not known.
 - **First export** (2026-09-13, not published): Qwen3-0.6B, MT6991, 512-token cache, all 9
   prompts, structural check passed. 4 chunks (3 x 86 MB, 165 MB with the output layer) plus
@@ -390,7 +392,7 @@ G5, Dimensity 9300+, Exynos 2500; GSM8K, RetrievalQA, IFEval, PopQA, BFCL, Fresh
 | XNNPACK | done | Qwen3, Qwen2.5, Llama 3.2, SmolLM2; Gemma 3 and SmolLM3 are not in 1.4.0's `export_llm` model list |
 | Qualcomm (SM8650, SM8750) | done | registry checkpoints only, one fixed window |
 | MediaTek (MT6989, MT6991) | phase 4 | `mtk_converter` wheel, NeuroPilot SDK |
-| Vulkan | done | Qwen3, Qwen2.5, Llama 3.2 and SmolLM2 published at 2k-32k; the apps load them since 2026-10-04 (`executorch-android-vulkan` 1.5.1) and they run on Mali and Adreno GPUs (finding 38) |
+| Vulkan | done | Qwen3, Qwen2.5, Llama 3.2 and SmolLM2 published at 2k-32k; the apps load them since 2026-10-04 (`executorch-android-vulkan` 1.5.1); Qwen3-0.6B 2k verified through the apps on one Mali and two Adreno GPUs (finding 38); successful device runs of the other families and windows are unverified (Qwen3-0.6B 32k did not run on the 12 GB Poco) |
 | CoreML / iOS | absent | 1.4.0's `export_llm` has `backend.coreml` (ios 15-18, `coreml_*` qmodes); needs a macOS runner and iOS naming/tags in the app (M) |
 | Samsung Exynos | absent | 1.4.0 ships `backends/samsung` (`EnnBackend`) but no LLM example for it (L, upstream-bound) |
 | Tensor G5 | n/a | no ExecuTorch delegate for the Tensor TPU: it runs XNNPACK (or Vulkan) files |
