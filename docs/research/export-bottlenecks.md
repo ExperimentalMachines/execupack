@@ -22,9 +22,9 @@ Host: GitHub `ubuntu-latest`, 4 vCPU, 16,766,414,848 B RAM, 25,769,799,680 B swa
 
 | Run | Chip | Window | Calibration loop | Other quantize | HTP compile | Rest | Export |
 |---|---|---|---|---|---|---|---|
-| [34706269492](https://github.com/ExperimentalMachines/executorch-model-exporter/actions/runs/34706269492) | SM8650 | 2,048 | 1,761 s (48.4%) | 280 s (7.7%) | 1,538 s (42.3%) | 56 s (1.6%) | 3,637 s |
-| [34706269492](https://github.com/ExperimentalMachines/executorch-model-exporter/actions/runs/34706269492) | SM8750 | 2,048 | 936 s (38.5%) | 257 s (10.5%) | 1,172 s (48.2%) | 69 s (2.8%) | 2,434 s |
-| [34741690464](https://github.com/ExperimentalMachines/executorch-model-exporter/actions/runs/34741690464) | SM8750 | 4,096 | 3,674 s (61.4%) | 328 s (5.5%) | 1,905 s (31.8%) | 80 s (1.3%) | 5,987 s |
+| [34706269492](https://github.com/ExperimentalMachines/execupack/actions/runs/34706269492) | SM8650 | 2,048 | 1,761 s (48.4%) | 280 s (7.7%) | 1,538 s (42.3%) | 56 s (1.6%) | 3,637 s |
+| [34706269492](https://github.com/ExperimentalMachines/execupack/actions/runs/34706269492) | SM8750 | 2,048 | 936 s (38.5%) | 257 s (10.5%) | 1,172 s (48.2%) | 69 s (2.8%) | 2,434 s |
+| [34741690464](https://github.com/ExperimentalMachines/execupack/actions/runs/34741690464) | SM8750 | 4,096 | 3,674 s (61.4%) | 328 s (5.5%) | 1,905 s (31.8%) | 80 s (1.3%) | 5,987 s |
 
 Evidence: [`qnn-run6-2k-sm8650-timings.log`](evidence/qnn-run6-2k-sm8650-timings.log),
 [`qnn-run6-2k-sm8750-timings.log`](evidence/qnn-run6-2k-sm8750-timings.log),

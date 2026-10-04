@@ -265,7 +265,7 @@ index 0000000..0d8fc8f
 +    """Token ids per calibration sample.
 +
 +    A .jsonl file holds samples the exporter already rendered in the model's chat template and
-+    tokenized (executorch-model-exporter, pipeline/mtk_corpus.py) and is used as it is. Anything
++    tokenized (execupack, pipeline/mtk_corpus.py) and is used as it is. Anything
 +    else is MediaTek's format, one prompt per line, wrapped in the preformatter and tokenized
 +    here exactly as before.
 +    """
