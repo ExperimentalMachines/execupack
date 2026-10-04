@@ -1,25 +1,25 @@
 # Qualcomm QNN export. Same core pins as export-xnnpack.txt; install torch and torchvision
 # from the CPU index first. The executorch Linux x86_64 wheel ships the Qualcomm backend and downloads
 # the QAIRT SDK version it was built against on first import (config/versions.env).
-torch==2.13.0
+torch==2.14.0
 torchao==0.18.0
-executorch==1.4.0
-pytorch-tokenizers==1.4.1
+executorch==1.5.1
+pytorch-tokenizers==1.5.0
 huggingface_hub==1.31.0
 safetensors==0.8.0
 jinja2==3.1.6
 pyyaml==6.0.3
-# ExecuTorch 1.4.0's pins for its examples (requirements-examples.txt,
+# ExecuTorch 1.5.1's pins for its examples (requirements-examples.txt,
 # examples/models/llama/install_requirements.sh): the Qualcomm LLM scripts load configs and
 # tokenizers through transformers and calibrate on an lm_eval task.
 transformers==5.0.0rc1
 datasets==3.6.0
 lm_eval==0.4.5
 # The Qualcomm LLM package imports every family's weight converter at import time; some go
-# through torchtune. ExecuTorch 1.4.0 pins this commit (examples/models/llama/install_requirements.sh).
+# through torchtune. ExecuTorch 1.5.1 pins this commit (examples/models/llama/install_requirements.sh).
 torchtune @ git+https://github.com/pytorch/torchtune.git@3c1872ace149f03ef4ffec765d3f0a5fd0399497
-# torchtune imports torchvision; 0.28.0 is the release built against torch 2.13.0 (CPU index).
-torchvision==0.28.0
+# torchtune imports torchvision; 0.29.0 is the release built against torch 2.14.0 (CPU index).
+torchvision==0.29.0
 sentencepiece==0.2.2
 tiktoken==0.14.0
 blobfile==3.3.0

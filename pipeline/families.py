@@ -44,7 +44,7 @@ class Family:
 
 
 _NOT_IN_EXPORT_LLM = (
-    "not in ExecuTorch 1.4.0 export_llm's model list; needs a validated export path "
+    "not in ExecuTorch 1.5.1 export_llm's model list; needs a validated export path "
     "(optimum-executorch or params support) before it is published"
 )
 # MediaTek's runner masks attention with an additive -100, not -inf (MaskBuilder, and the
@@ -59,12 +59,12 @@ _MTK_QWEN2_MASK = (
     "any quantization (docs/research, finding 37)"
 )
 _MTK_GEMMA3 = "not validated on the MediaTek scripts (they expect model_type gemma3, HF has gemma3_text)"
-_MTK_NO_MODEL = "no model definition for this architecture in ExecuTorch 1.4.0's examples/mediatek"
+_MTK_NO_MODEL = "no model definition for this architecture in ExecuTorch 1.5.1's examples/mediatek"
 _LFM2_NO_VULKAN = (
     "the Vulkan delegate has no kernel for the short convolution, and an LFM2.5 file that "
     "lowers to it segfaults in the 1.4.0 runtime at the first prefill"
 )
-_LFM2_NO_QNN = "not in ExecuTorch 1.4.0's Qualcomm SUPPORTED_LLM_MODELS registry"
+_LFM2_NO_QNN = "not in ExecuTorch 1.5.1's Qualcomm SUPPORTED_LLM_MODELS registry"
 
 FAMILIES: tuple[Family, ...] = (
     Family("qwen3", ("Qwen3ForCausalLM",)),
@@ -118,7 +118,7 @@ QNN_PARAMS = {
     "smollm2_135m": "examples/models/smollm2/135M_config.json",
     "smollm3-3b": "examples/models/smollm3/3b_config.json",
 }
-QNN_UNLISTED = "no entry for this checkpoint in ExecuTorch 1.4.0's Qualcomm LLM scripts"
+QNN_UNLISTED = "no entry for this checkpoint in ExecuTorch 1.5.1's Qualcomm LLM scripts"
 
 
 def qnn_decoder(model_id: str) -> str | None:

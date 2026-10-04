@@ -389,7 +389,7 @@ def run(
     cfg = settings.load()
     recipe = cfg.mtk
     if soc not in SOC_PLATFORMS:
-        raise ExportError(f"unknown MediaTek chip {soc!r}; ExecuTorch 1.4.0's scripts know {sorted(SOC_PLATFORMS)}")
+        raise ExportError(f"unknown MediaTek chip {soc!r}; ExecuTorch's scripts know {sorted(SOC_PLATFORMS)}")
     precision = os.environ.get("MTK_PRECISION") or recipe.precision
     if precision not in PRECISIONS:
         raise ExportError(f"unknown NeuroPilot precision {precision!r}, expected one of {sorted(PRECISIONS)}")

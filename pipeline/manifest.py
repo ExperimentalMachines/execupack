@@ -255,7 +255,7 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
             f"The `qnn/` folders hold QNN HTP context binaries compiled with the Qualcomm AI Runtime "
             f"SDK (QAIRT) {version} from Qualcomm Technologies, Inc., used under its AI Stack License. "
             "No Qualcomm SDK or runtime library is included; running them needs the matching QNN "
-            "runtime (for example `executorch-android-qnn` 1.4.0, which depends on `qnn-runtime` 2.37.0).",
+            "runtime (for example `executorch-android-qnn` 1.5.1, which depends on `qnn-runtime` 2.37.0).",
         ]
     mtk = [r for r in reports if r["backend"] == "mtk"]
     if mtk:
@@ -276,7 +276,7 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
                 "",
                 "Variants whose `runner` says `state_layout: per-layer` give each short-convolution layer "
                 "its own two-position state, and take two small inputs that keep the runner's padding out "
-                "of the convolution. MediaTek's runner as ExecuTorch 1.4.0 ships it cannot load them; the "
+                "of the convolution. MediaTek's runner as ExecuTorch 1.4.0 and 1.5.1 ship it cannot load them; the "
                 "one that can is ExecuTorch's `examples/mediatek/executor_runner/llama_runner` with "
                 "[OpenWeights' patch](https://github.com/ExperimentalMachines/openweights/blob/main/tools/npu/"
                 "patches/executorch-release-1.4-pd.patch), which tells caches from states by shape.",
