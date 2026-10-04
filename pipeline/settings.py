@@ -13,11 +13,27 @@ CONFIG_DIR = ROOT / "config"
 
 
 @dataclass(frozen=True)
+class RunnerTier:
+    """A CI runner size, and what it can carry. Smallest first in each recipe's runner_tiers."""
+
+    label: str
+    ram_bytes: int
+    disk_bytes: int
+    swap_gib: int
+    # Largest window this tier is given when calibration streams (lfm2.py), where memory no
+    # longer grows with the window and the time does. None means no limit.
+    max_window: int | None = None
+
+
+@dataclass(frozen=True)
 class XnnpackRecipe:
     qmode: str
     group_size: int
     embedding_quantize: str
     embedding_hqq: bool
+    # Runners an export may be sent to, smallest first (export_xnnpack.pick_runner). Empty
+    # means the workflow's fixed runner.
+    runner_tiers: tuple[RunnerTier, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -28,19 +44,6 @@ class QnnRecipe:
     max_context_len: int
     calib_tasks: tuple[str, ...]
     calib_limit: int
-
-
-@dataclass(frozen=True)
-class RunnerTier:
-    """A CI runner size, and what it can carry. Smallest first in MtkRecipe.runner_tiers."""
-
-    label: str
-    ram_bytes: int
-    disk_bytes: int
-    swap_gib: int
-    # Largest window this tier is given when calibration streams (lfm2.py), where memory no
-    # longer grows with the window and the time does. None means no limit.
-    max_window: int | None = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,19 @@ def read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def runner_tiers(section: dict) -> tuple[RunnerTier, ...]:
+    return tuple(
+        RunnerTier(
+            label=str(tier["label"]),
+            ram_bytes=int(tier["ram_bytes"]),
+            disk_bytes=int(tier["disk_bytes"]),
+            swap_gib=int(tier["swap_gib"]),
+            max_window=int(tier["max_window"]) if tier.get("max_window") else None,
+        )
+        for tier in section.get("runner_tiers", ())
+    )
+
+
 @lru_cache(maxsize=1)
 def load() -> Settings:
     raw = yaml.safe_load((CONFIG_DIR / "pipeline.yaml").read_text(encoding="utf-8"))
@@ -120,12 +136,14 @@ def load() -> Settings:
             group_size=int(export["xnnpack"]["group_size"]),
             embedding_quantize=str(export["xnnpack"]["embedding_quantize"]),
             embedding_hqq=bool(export["xnnpack"].get("embedding_hqq", False)),
+            runner_tiers=runner_tiers(export["xnnpack"]),
         ),
         vulkan=XnnpackRecipe(
             qmode=export["vulkan"]["qmode"],
             group_size=int(export["vulkan"]["group_size"]),
             embedding_quantize=str(export["vulkan"]["embedding_quantize"]),
             embedding_hqq=bool(export["vulkan"].get("embedding_hqq", False)),
+            runner_tiers=runner_tiers(export["vulkan"]),
         ),
         qnn=QnnRecipe(
             socs=tuple(export["qnn"]["socs"]),
@@ -145,16 +163,7 @@ def load() -> Settings:
             response_cap=int(export["mtk"]["response_cap"]),
             min_calibration_prompts=int(export["mtk"]["min_calibration_prompts"]),
             long_samples=int(export["mtk"].get("long_samples", 14)),
-            runner_tiers=tuple(
-                RunnerTier(
-                    label=str(tier["label"]),
-                    ram_bytes=int(tier["ram_bytes"]),
-                    disk_bytes=int(tier["disk_bytes"]),
-                    swap_gib=int(tier["swap_gib"]),
-                    max_window=int(tier["max_window"]) if tier.get("max_window") else None,
-                )
-                for tier in export["mtk"].get("runner_tiers", ())
-            ),
+            runner_tiers=runner_tiers(export["mtk"]),
         ),
         executorch_version=versions["EXECUTORCH_VERSION"],
     )

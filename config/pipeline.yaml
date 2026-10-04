@@ -76,6 +76,21 @@ export:
     # built on two hosted runners differs in the embedding's low bits and small models decode
     # different text. Affine is deterministic; leave this false to keep builds reproducible.
     embedding_hqq: false
+    # The same x86 tiers as vulkan.runner_tiers (see there for the measured RAM), picked per
+    # window by export_xnnpack.pick_runner on sizing.host_need_bytes(..., "xnnpack").
+    runner_tiers:
+      - label: blacksmith-8vcpu-ubuntu-2404
+        ram_bytes: 33229729792
+        disk_bytes: 160000000000
+        swap_gib: 24
+      - label: blacksmith-16vcpu-ubuntu-2404
+        ram_bytes: 66577858560
+        disk_bytes: 750000000000
+        swap_gib: 64
+      - label: blacksmith-32vcpu-ubuntu-2404
+        ram_bytes: 121766014976
+        disk_bytes: 1500000000000
+        swap_gib: 96
   vulkan:
     # The GPU delegate runs the same torchao 8da4w linears (backends/vulkan/vulkan-quantization);
     # the file is otherwise the XNNPACK recipe with backend.vulkan in export_llm.
@@ -83,6 +98,29 @@ export:
     group_size: 32
     embedding_quantize: "8,0"
     embedding_hqq: false
+    # x86 Blacksmith runners, smallest first; export_xnnpack.pick_runner gives each window
+    # the first that holds sizing.host_need_bytes in RAM, and when none can, the one with the
+    # most RAM that holds it with swap. The cost is the window, not the model: every
+    # attention layer holds a window x window mask, so Qwen3-4B needs ~22 GiB at 2k and ~134
+    # GiB at 32k, and one fixed size either wastes the small windows or kills the wide ones.
+    # x86 rather than ARM for the largest tier (ARM tops out at 96 GB).
+    #
+    # ram_bytes is the smallest MemTotal the runners reported in fifty Vulkan exports
+    # (2026-10-04), not the nominal size: the 32vcpu tier is sold as 128 GB and reported
+    # 113.4 to 124.2 GiB, and 8vcpu and 16vcpu reported 30.9 and 62.0 GiB every time.
+    runner_tiers:
+      - label: blacksmith-8vcpu-ubuntu-2404
+        ram_bytes: 33229729792
+        disk_bytes: 160000000000
+        swap_gib: 24
+      - label: blacksmith-16vcpu-ubuntu-2404
+        ram_bytes: 66577858560
+        disk_bytes: 750000000000
+        swap_gib: 64
+      - label: blacksmith-32vcpu-ubuntu-2404
+        ram_bytes: 121766014976
+        disk_bytes: 1500000000000
+        swap_gib: 96
   qnn:
     # HTP context binaries are compiled per chip and load only on that chip. The benchmark
     # devices (docs/PLAN.md, "Devices"): Snapdragon 8 Elite (Galaxy S25 Ultra) = SM8750.

@@ -1,3 +1,5 @@
+import dataclasses
+
 import pytest
 from conftest import make_source
 
@@ -48,6 +50,7 @@ def test_no_window_given_means_the_largest_the_host_can_build(tmp_path, qwen3_1_
 
 
 def test_vulkan_shares_the_recipe_and_only_swaps_the_delegate(tmp_path):
+    import dataclasses
     from pathlib import Path
 
     from conftest import hf_config
@@ -62,7 +65,8 @@ def test_vulkan_shares_the_recipe_and_only_swaps_the_delegate(tmp_path):
     assert vulkan["backend"] == {"vulkan": {"enabled": True}}
     assert xnnpack["backend"] == {"xnnpack": {"enabled": True, "extended_ops": True}}
     assert {k: v for k, v in vulkan.items() if k != "backend"} == {k: v for k, v in xnnpack.items() if k != "backend"}
-    assert cfg.vulkan == cfg.xnnpack
+    # Same quantization recipe; only Vulkan carries per-window runner tiers.
+    assert dataclasses.replace(cfg.vulkan, runner_tiers=()) == dataclasses.replace(cfg.xnnpack, runner_tiers=())
     # The app reads the backend from the name: the Vulkan file says so, the XNNPACK folder does.
     repo = naming.output_repo("Qwen/Qwen3-1.7B", cfg.hub_org, cfg.repo_suffix)
     name = naming.cpu_gpu_file("Qwen/Qwen3-1.7B", "vulkan", "8da4w", 4096)
@@ -74,3 +78,23 @@ def test_vulkan_shares_the_recipe_and_only_swaps_the_delegate(tmp_path):
 def test_unknown_backend_is_refused(tmp_path):
     with pytest.raises(exporting.ExportError, match="unknown backend"):
         export_xnnpack.run("Qwen/Qwen3-1.7B", "main", tmp_path, tmp_path, backend="coreml")
+
+
+def test_the_fp32_recipe_leaves_the_linears_unquantized():
+    from pathlib import Path
+
+    from conftest import hf_config
+
+    from pipeline import families
+
+    cfg = settings.load()
+    config = hf_config("HuggingFaceTB/SmolLM2-360M-Instruct")
+    plan = families.xnnpack_plan(families.family_for(config), config)
+    recipe = dataclasses.replace(cfg.xnnpack, qmode="fp32")
+    built = export_xnnpack.export_llm_config(
+        plan, Path("p.json"), Path("c.pth"), Path("o.pte"), 2048, cfg.prefill_chunk, recipe, 1, [2], backend="xnnpack"
+    )
+    assert built["quantization"]["qmode"] is None
+    assert built["quantization"]["embedding_quantize"] == cfg.xnnpack.embedding_quantize
+    # export_llm's own enum value for the default recipe passes through unchanged.
+    assert export_xnnpack.QMODES["8da4w"] == "8da4w"

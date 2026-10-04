@@ -18,6 +18,7 @@ Produces, under ``out_dir`` (the layout of the published HF repo):
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shutil
@@ -29,6 +30,7 @@ import yaml
 
 from pipeline import convert, eligibility, families, hub, manifest, naming, settings, sizing, smoke
 from pipeline.exporting import (
+    RESERVE_BYTES,
     ExportError,
     MemorySampler,
     SkipExport,
@@ -45,6 +47,14 @@ from pipeline.exporting import (
 )
 
 BACKEND = "xnnpack"
+# Recipe label (file name, report) -> export_llm's qmode. 8da4w: dynamic int8 activations,
+# int4 weights in groups. fp32: the linears are not quantized at all (embeddings still int8),
+# for models too small to keep their decisions at 4 bits: SmolLM2-360M's GPTQ file failed
+# the gate on 2 of 4 quiet rows. ExecuTorch 1.4.0's XNNPACK path has nothing in between:
+# its torchao:8daXw patterns are refused alongside XNNPACK delegation, and qmode int8 fails
+# in ConvertToLinearPass.
+QMODES = {"8da4w": "8da4w", "fp32": None}
+
 BACKEND_CONFIG = {
     "xnnpack": {"xnnpack": {"enabled": True, "extended_ops": True}},
     "vulkan": {"vulkan": {"enabled": True}},
@@ -87,7 +97,7 @@ def export_llm_config(
             "enable_dynamic_shape": True,
         },
         "quantization": {
-            "qmode": recipe.qmode,
+            "qmode": QMODES[recipe.qmode],
             "group_size": recipe.group_size,
             "embedding_quantize": recipe.embedding_quantize,
             # Only the embedding reads this. torchao's HQQ search for its scales is
@@ -105,6 +115,29 @@ def export_llm_config(
     }
 
 
+def pick_runner(
+    arch: sizing.Architecture, context: int, tiers: tuple[settings.RunnerTier, ...], backend: str = BACKEND
+) -> settings.RunnerTier | None:
+    """The smallest tier that can export this window, or None if none can.
+
+    A tier that holds the whole need in RAM is preferred: the masks and the fp32 weights
+    are touched on every pass of torch.export and lowering, so a window that leans on swap
+    runs at the pager's speed. When no tier has the RAM, the one with the most RAM that
+    holds the need with swap is taken, not the smallest: Qwen2.5-3B at 32k measured 101.5
+    GiB, which a 62 GiB runner with 64 GiB of swap would technically hold by paging 40 GiB.
+    The budget is host_budget's, RAM plus swap less the reserve, which the job measures
+    again on the runner and gates on with the same host_need_bytes.
+    """
+    need = sizing.host_need_bytes(arch, context, backend)
+    for tier in tiers:
+        if need <= tier.ram_bytes - RESERVE_BYTES:
+            return tier
+    for tier in reversed(tiers):
+        if need <= tier.ram_bytes + tier.swap_gib * 1024**3 - RESERVE_BYTES:
+            return tier
+    return None
+
+
 def run(
     model_id: str,
     revision: str,
@@ -115,6 +148,7 @@ def run(
     skip_smoke: bool = False,
     backend: str = BACKEND,
     codes: Path | None = None,
+    qmode: str | None = None,
 ) -> dict:
     if backend not in BACKEND_CONFIG:
         raise ExportError(f"unknown backend {backend!r}; this exporter builds {sorted(BACKEND_CONFIG)}")
@@ -131,7 +165,9 @@ def run(
     arch = families.architecture(source.config, source.total_params)
     host = host_info()
     budget = host_budget(host)
-    choice = sizing.choose_context(arch, cfg.context_tiers, cfg.device_budget_bytes, cfg.runtime_overhead_bytes, budget)
+    choice = sizing.choose_context(
+        arch, cfg.context_tiers, cfg.device_budget_bytes, cfg.runtime_overhead_bytes, budget, backend
+    )
     # Every tier is exported, one job per window; the app and the benchmarker decide what
     # fits a phone (the estimate goes into the report as fits_phone_budget). Only the host
     # limit is a gate: past it the runner VM is killed outright, with no Python error.
@@ -144,15 +180,24 @@ def run(
     else:
         window = context
         window_reason = f"requested window {context}"
-        peak = sizing.export_peak_bytes(arch, context)
-        if budget is not None and peak > budget:
+        # The same headroom choose_context applies. Comparing the raw estimate here let
+        # Qwen3-1.7B at 32k through (44.9 GiB against 46.5) after the headroom was added,
+        # and every workflow job takes this path, because each one passes --context.
+        need = sizing.host_need_bytes(arch, context, backend)
+        if budget is not None and need > budget:
             raise SkipExport(
-                f"a {context}-token export needs about {peak:,} B (causal masks alone "
+                f"a {context}-token export needs about {need:,} B with headroom (causal masks alone "
                 f"{sizing.causal_mask_bytes(arch, context):,} B); this host has {budget:,} B"
             )
     resident = sizing.device_resident_bytes(arch, window, cfg.runtime_overhead_bytes)
 
     recipe = cfg.xnnpack if backend == "xnnpack" else cfg.vulkan
+    if qmode:
+        if qmode not in QMODES:
+            raise ExportError(f"qmode {qmode!r}; this exporter builds {sorted(QMODES)}")
+        if codes is not None and qmode != "8da4w":
+            raise ExportError("solved codes are int4; a GPTQ run exports 8da4w")
+        recipe = dataclasses.replace(recipe, qmode=qmode)
     output_repo = naming.output_repo(model_id, cfg.hub_org, cfg.repo_suffix)
     # The recipe goes in the file name, and a solve is a different recipe from rounding: a
     # reader, and a repository holding both, must be able to tell them apart. export_llm
@@ -260,7 +305,7 @@ def run(
             "converter": plan.converter,
             "params": plan.params,
             "qmode": qmode_label,
-            "export_llm_qmode": recipe.qmode,
+            "export_llm_qmode": QMODES[recipe.qmode],
             "group_size": recipe.group_size,
             "embedding_quantize": recipe.embedding_quantize,
             "embedding_hqq": recipe.embedding_hqq,

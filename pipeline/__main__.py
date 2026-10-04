@@ -81,7 +81,9 @@ def _audit(args) -> int:
 def _solve(args) -> int:
     from pipeline import solve as solve_module
 
-    report = solve_module.run(args.model, args.revision, Path(args.out), Path(args.work), damp=args.damp)
+    report = solve_module.run(
+        args.model, args.revision, Path(args.out), Path(args.work), damp=args.damp, reference_only=args.reference_only
+    )
     print(json.dumps(report, indent=2))
     return 0
 
@@ -99,6 +101,7 @@ def _export_xnnpack(args) -> int:
             keep_work=args.keep_work,
             skip_smoke=args.skip_smoke,
             codes=Path(args.codes) if args.codes else None,
+            qmode=args.qmode or None,
         )
     )
 
@@ -159,6 +162,50 @@ def _mtk_matrix(args) -> int:
             # that refuses to start teaches less than nine jobs that finish.
             print(f"no runner tier can build a {window}-token window", file=sys.stderr)
             continue
+        entries.append({"context": window, "runner": tier.label, "swap_gib": tier.swap_gib})
+    print(json.dumps(entries))
+    return 0
+
+
+def _export_matrix(args) -> int:
+    """One matrix entry per window for an export_llm backend: the window and the smallest
+    runner that can build it (export_xnnpack.pick_runner), from the model's config alone.
+
+    The job re-measures its host and gates on the same sizing.host_need_bytes, so a window
+    this sends to a tier is one the job will not refuse, and one no tier can carry is left
+    out here instead of being started on a runner it would kill.
+    """
+    from pipeline import export_xnnpack, families, hub, settings, sizing
+
+    cfg = settings.load()
+    recipe = cfg.vulkan if args.backend == "vulkan" else cfg.xnnpack
+    if not recipe.runner_tiers:
+        print(f"no runner_tiers configured for {args.backend} in config/pipeline.yaml", file=sys.stderr)
+        return 2
+    source = hub.fetch(args.model, args.revision)
+    family = families.family_for(source.config) if source.config else None
+    if family is None or not source.total_params:
+        print(f"no known family or parameter count for {args.model}", file=sys.stderr)
+        return 2
+    arch = families.architecture(source.config, source.total_params)
+    if args.contexts:
+        try:
+            wanted = json.loads(args.contexts)
+        except ValueError:
+            wanted = [v for v in args.contexts.strip("[]").split(",") if v.strip()]
+        if not isinstance(wanted, list):
+            wanted = [wanted]
+    else:
+        wanted = list(cfg.context_tiers)
+
+    entries = []
+    for window in sorted({int(v) for v in wanted}, reverse=True):
+        need = sizing.host_need_bytes(arch, window, args.backend)
+        tier = export_xnnpack.pick_runner(arch, window, recipe.runner_tiers, args.backend)
+        if tier is None:
+            print(f"no runner tier can build a {window}-token window (needs {need:,} B)", file=sys.stderr)
+            continue
+        print(f"{window}: {tier.label}, needs {need / 2**30:.1f} GiB", file=sys.stderr)
         entries.append({"context": window, "runner": tier.label, "swap_gib": tier.swap_gib})
     print(json.dumps(entries))
     return 0
@@ -273,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="codes.pt from `solve`; without it the int4 weights are rounded to nearest",
     )
+    export.add_argument("--qmode", default="", help="recipe: 8da4w (config default) or fp32 (linears not quantized)")
     export.set_defaults(func=_export_xnnpack)
 
     verify = commands.add_parser("verify", help="smoke-test an exported .pte on a host whose runner works")
@@ -299,6 +347,11 @@ def main(argv: list[str] | None = None) -> int:
     solve.add_argument("--out", default="codes.pt")
     solve.add_argument("--work", default="work")
     solve.add_argument("--damp", type=float, default=0.01, help="Hessian damping, as a fraction of its mean diagonal")
+    solve.add_argument(
+        "--reference-only",
+        action="store_true",
+        help="write only the gate's fp32 reference (gate.json), no codes: for a recipe that is not solved",
+    )
     solve.set_defaults(func=_solve)
 
     vulkan = commands.add_parser("export-vulkan", help="download, convert, export a Vulkan (GPU) .pte")
@@ -358,6 +411,15 @@ def main(argv: list[str] | None = None) -> int:
         "counts the real file and its disk gate catches a mismatch",
     )
     matrix.set_defaults(func=_mtk_matrix)
+
+    export_matrix = commands.add_parser(
+        "export-matrix", help="windows and the runner each needs for an export_llm backend, as a CI matrix"
+    )
+    export_matrix.add_argument("model")
+    export_matrix.add_argument("--revision", default="main")
+    export_matrix.add_argument("--backend", default="vulkan", choices=["vulkan", "xnnpack"])
+    export_matrix.add_argument("--contexts", default="", help="JSON or comma-separated windows; empty for every tier")
+    export_matrix.set_defaults(func=_export_matrix)
 
     watch = commands.add_parser("watch", help="check the watched orgs, dispatch exports, update state")
     watch.add_argument("--state", required=True, help="state JSON (on the state branch)")
