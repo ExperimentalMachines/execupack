@@ -14,7 +14,7 @@ limits. Read it before changing sizing, backends or naming, and update it when a
 ```sh
 pip install -r requirements/dev.txt      # enough for lint + all tests except tests/test_convert.py
 # test_convert.py is skipped unless torch + safetensors are present (CI installs them from the CPU index):
-pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu && pip install safetensors==0.8.0 numpy
+pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu && pip install safetensors==0.8.0 numpy
 
 ruff check . && ruff format --check .    # CI runs both; line length 120
 pytest -q                                # all tests
@@ -92,7 +92,7 @@ the app's `config.json` from a folder's reports. **`export-mtk.yml`** → `expor
   `coder`, `guard`, `qwen35`.
 - **Tokenizer only at the repo root.** A tokenizer inside any backend folder stops the app lending the root one to the
   other folders; `publish_hf` refuses it.
-- `third_party/executorch/` holds params files copied verbatim from ExecuTorch v1.4.0 (the wheel doesn't ship them) for
+- `third_party/executorch/` holds params files copied verbatim from ExecuTorch v1.4.0, unchanged in v1.5.1 (the wheel doesn't ship them) for
   the QNN registry. Refresh them when the ExecuTorch pin moves.
 - QNN `.pte` metadata always has BOS 1 / EOS 2 (hard-coded upstream); stop tokens must come from the tokenizer.
 - Upstream licenses are copied verbatim into published repos; vendor SDKs (QAIRT, NeuroPilot) are downloaded at run
@@ -109,7 +109,7 @@ is pinned (`tests/test_versions.py` enforces it, and that the backend files agre
 
 `tests/fixtures/*.config.json` are real HF `config.json` files, and `et-*.params.json` are ExecuTorch's own params for
 the same models. `tests/test_convert.py` and `tests/test_qnn.py` skip without torch/executorch; CI installs both (CPU
-index), and locally a scratch venv with `torch==2.13.0 executorch==1.4.0` runs them on macOS too. Tests check generated params against them and against the vendored `third_party` copies. Build a
+index), and locally a scratch venv with `torch==2.14.0 executorch==1.5.1` runs them on macOS too. Tests check generated params against them and against the vendored `third_party` copies. Build a
 `SourceModel` with the `source` fixture / `conftest.make_source`; `TOTAL_PARAMS` holds real Hub parameter counts. The
 watcher takes injectable `lister`/`fetch`/`dispatcher` callables, so tests never touch the network.
 
