@@ -70,7 +70,11 @@ fits and tells the exporter what the runner can build:
 - `.pte` estimate for 8da4w/g32 + int8 embeddings = (`embedding params × 1 B + linear
   params × 0.5625 B + window × head_dim × 16 B` of RoPE tables) × 1.01, with linear
   params counted from the architecture (the output projection always gets its own 4-bit
-  copy). Within 1% of every measured file.
+  copy). Within 1% of every measured file. The fp32 recipe (linears not quantized) counts
+  linear params at 4 B instead: SmolLM2-360M at 2k comes to 1,496,317,952 B before the
+  1.01 factor against 1,496,334,720 B measured. Until this was added, fp32 reports carried
+  the 8da4w sizing, and their recipe fields claimed int4 codes and a group size they do not
+  have (`export_xnnpack.recipe_fields`).
 - Export peak ≈ fp32 weights + KV cache + `n_layers × window²` bytes of causal masks +
   2.5 GB, **multiplied by `HOST_PEAK_HEADROOM` (1.70) before it is compared to the runner's
   budget**. The estimate runs under what the runner actually uses: measured against

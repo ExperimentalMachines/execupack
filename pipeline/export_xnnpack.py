@@ -138,6 +138,49 @@ def pick_runner(
     return None
 
 
+def recipe_fields(recipe, qmode_label: str, solved: bool, backend: str, prefill_chunk: int) -> dict:
+    """The report's description of how the weights are stored, true to the recipe built.
+
+    8da4w: dynamic int8 activations and int4 weights in groups, the codes rounded to nearest or
+    solved with GPTQ. fp32: the linears are not quantized, so there are no int4 codes and no
+    group size; the embedding is still int8. Writing the 8da4w fields for an fp32 file told
+    every reader of the report, and of the README built from it, that its weights were 4-bit.
+    """
+    delegate = "XNNPACK with extended ops" if backend == "xnnpack" else "the Vulkan delegate"
+    common = {
+        "qmode": qmode_label,
+        "embedding_quantize": recipe.embedding_quantize,
+        "prefill_chunk": prefill_chunk,
+        "kv_cache_dtype": "fp32",
+    }
+    if recipe.qmode == "fp32":
+        return {
+            **common,
+            "group_size": None,
+            "int4_codes": None,
+            "label": "fp32 linears, int8 embeddings",
+            "description": (
+                f"ExecuTorch {toolchain()['executorch']} `export_llm`: fp32 weights and activations in every "
+                f"linear (not quantized), int8 per-channel embeddings, {delegate}, prefill chunk "
+                f"{prefill_chunk}, fp32 KV cache."
+            ),
+        }
+    return {
+        **common,
+        "group_size": recipe.group_size,
+        "int4_codes": "gptq" if solved else "round-to-nearest",
+        "label": (
+            f"{qmode_label}-g{recipe.group_size}, int8 embeddings"
+            + (", int4 codes solved with GPTQ" if solved else ", int4 codes rounded to nearest")
+        ),
+        "description": (
+            f"ExecuTorch {toolchain()['executorch']} `export_llm`: 8-bit dynamic activations "
+            f"and 4-bit weights in groups of {recipe.group_size}, int8 per-channel embeddings, "
+            f"{delegate}, prefill chunk {prefill_chunk}, fp32 KV cache."
+        ),
+    }
+
+
 def run(
     model_id: str,
     revision: str,
@@ -165,8 +208,17 @@ def run(
     arch = families.architecture(source.config, source.total_params)
     host = host_info()
     budget = host_budget(host)
+    # The recipe is settled before sizing: an fp32 file is eight times an 8da4w one per linear
+    # weight, and the report's sizing and wording must describe the file actually built.
+    recipe = cfg.xnnpack if backend == "xnnpack" else cfg.vulkan
+    if qmode:
+        if qmode not in QMODES:
+            raise ExportError(f"qmode {qmode!r}; this exporter builds {sorted(QMODES)}")
+        if codes is not None and qmode != "8da4w":
+            raise ExportError("solved codes are int4; a GPTQ run exports 8da4w")
+        recipe = dataclasses.replace(recipe, qmode=qmode)
     choice = sizing.choose_context(
-        arch, cfg.context_tiers, cfg.device_budget_bytes, cfg.runtime_overhead_bytes, budget, backend
+        arch, cfg.context_tiers, cfg.device_budget_bytes, cfg.runtime_overhead_bytes, budget, backend, recipe.qmode
     )
     # Every tier is exported, one job per window; the app and the benchmarker decide what
     # fits a phone (the estimate goes into the report as fits_phone_budget). Only the host
@@ -189,15 +241,8 @@ def run(
                 f"a {context}-token export needs about {need:,} B with headroom (causal masks alone "
                 f"{sizing.causal_mask_bytes(arch, context):,} B); this host has {budget:,} B"
             )
-    resident = sizing.device_resident_bytes(arch, window, cfg.runtime_overhead_bytes)
+    resident = sizing.device_resident_bytes(arch, window, cfg.runtime_overhead_bytes, recipe.qmode)
 
-    recipe = cfg.xnnpack if backend == "xnnpack" else cfg.vulkan
-    if qmode:
-        if qmode not in QMODES:
-            raise ExportError(f"qmode {qmode!r}; this exporter builds {sorted(QMODES)}")
-        if codes is not None and qmode != "8da4w":
-            raise ExportError("solved codes are int4; a GPTQ run exports 8da4w")
-        recipe = dataclasses.replace(recipe, qmode=qmode)
     output_repo = naming.output_repo(model_id, cfg.hub_org, cfg.repo_suffix)
     # The recipe goes in the file name, and a solve is a different recipe from rounding: a
     # reader, and a repository holding both, must be able to tell them apart. export_llm
@@ -304,24 +349,9 @@ def run(
             "model_class": plan.model_class,
             "converter": plan.converter,
             "params": plan.params,
-            "qmode": qmode_label,
             "export_llm_qmode": QMODES[recipe.qmode],
-            "group_size": recipe.group_size,
-            "embedding_quantize": recipe.embedding_quantize,
             "embedding_hqq": recipe.embedding_hqq,
-            "int4_codes": "gptq" if codes is not None else "round-to-nearest",
-            "prefill_chunk": min(cfg.prefill_chunk, window),
-            "kv_cache_dtype": "fp32",
-            "label": (
-                f"{qmode_label}-g{recipe.group_size}, int8 embeddings"
-                + (", int4 codes solved with GPTQ" if codes is not None else ", int4 codes rounded to nearest")
-            ),
-            "description": (
-                f"ExecuTorch {toolchain()['executorch']} `export_llm`: 8-bit dynamic activations "
-                f"and 4-bit weights in groups of {recipe.group_size}, int8 per-channel embeddings, "
-                f"{'XNNPACK with extended ops' if backend == 'xnnpack' else 'the Vulkan delegate'}, "
-                f"prefill chunk {min(cfg.prefill_chunk, window)}, fp32 KV cache."
-            ),
+            **recipe_fields(recipe, qmode_label, codes is not None, backend, min(cfg.prefill_chunk, window)),
         },
         "window": {
             "context": window,
@@ -336,7 +366,7 @@ def run(
             {"path": pte_path_in_repo, "bytes": pte.stat().st_size, "sha256": sha256(pte)},
         ],
         "estimates": {
-            "pte_bytes_estimate": sizing.pte_bytes_estimate(arch, window),
+            "pte_bytes_estimate": sizing.pte_bytes_estimate(arch, window, recipe.qmode),
             "pte_bytes_actual": pte.stat().st_size,
             "export_peak_bytes_estimate": sizing.export_peak_bytes(arch, window),
         },
