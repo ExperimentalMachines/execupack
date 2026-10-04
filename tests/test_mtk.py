@@ -303,6 +303,18 @@ def test_the_runner_is_sized_by_the_window_and_both_limits_bind():
     assert need > biggest.ram_bytes
     assert need < biggest.ram_bytes + biggest.swap_gib * 1024**3
 
+    # A window past every tier's RAM goes to the tier with the most RAM, not to the smallest
+    # that swap can stretch to: Qwen2.5-3B at 32k (36 layers, 2 KV heads of 128) needs about
+    # 110 GB, which the 64 GB tier with 64 GiB of swap would also "carry".
+    qwen25_3b = {
+        "num_hidden_layers": 36,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 2,
+        "head_dim": 128,
+        "hidden_size": 2048,
+    }
+    assert pick(qwen25_3b, 32768, 3_085_938_688) == biggest.label
+
 
 def test_no_runner_tier_is_arm_because_the_toolchain_is_x86_only():
     # mtk_converter is a cp310 manylinux x86_64 wheel and mtk_neuron is tagged
@@ -442,3 +454,32 @@ def test_streaming_windows_go_to_the_cores_that_finish_them():
     biggest = CFG.mtk.runner_tiers[-1]
     at_32k = dataclasses.replace(CFG.mtk, cache_size=32768)
     assert export_mtk.calibration_bytes(LFM26, at_32k, 23, 2_697_198_592, streaming=True) < biggest.ram_bytes
+
+
+def test_llama_family_uses_mediateks_llama_script_with_the_fast_tokenizer():
+    llama32 = load_json("llama-3.2-1b-instruct.config.json")
+    # Llama 3's frequency scaling is implemented by mediatek-rope-theta.patch.
+    assert families.mtk_plan(families.family_for(llama32), llama32, 4) == families.MtkPlan(
+        "llama.py", "llama3.json", 4, "pretrained_fast"
+    )
+    smollm2 = load_json("smollm2-135m.config.json")
+    # SmolLM2 is plain RoPE and speaks ChatML, so it calibrates in that template.
+    assert families.mtk_plan(families.family_for(smollm2), smollm2, 4) == families.MtkPlan(
+        "llama.py",
+        "qwen.json",
+        3,
+        "pretrained_fast",  # 30 layers: three chunks of ten
+    )
+
+
+def test_the_patches_carry_what_the_export_checks_for():
+    patches = settings.ROOT / "third_party/executorch/patches"
+    calibration = (patches / "mediatek-calibration-as-arrays.patch").read_text(encoding="utf-8")
+    for script in ("qwen.py", "llama.py"):
+        assert f"+++ b/examples/mediatek/model_export_scripts/{script}" in calibration
+    added = [line[1:].strip() for line in calibration.splitlines() if line.startswith("+")]
+    assert export_mtk.WRITER_MARKER in added
+    rope = (patches / "mediatek-rope-theta.patch").read_text(encoding="utf-8")
+    assert sum(export_mtk.ROPE_MARKER in line for line in rope.splitlines() if line.startswith("+")) == 2
+    for config in export_mtk.ROPE_CONFIGS.values():
+        assert f"+++ b/examples/mediatek/models/llm_models/{config}" in rope

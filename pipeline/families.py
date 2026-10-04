@@ -47,9 +47,16 @@ _NOT_IN_EXPORT_LLM = (
     "not in ExecuTorch 1.4.0 export_llm's model list; needs a validated export path "
     "(optimum-executorch or params support) before it is published"
 )
-_MTK_LLAMA = (
-    "not validated on ExecuTorch 1.4.0's MediaTek scripts: they read rope_scaling['type'], "
-    "Llama 3.2 configs carry rope_type llama3, and SmolLM2 needs its tokenizer class chosen"
+# MediaTek's runner masks attention with an additive -100, not -inf (MaskBuilder, and the
+# scripts' calibration masks). Qwen3 normalises q and k, so its scores stay far below that
+# and the fp32 MediaTek model matches Hugging Face exactly; Qwen2.5 has no QK norm, its
+# masked scores leak through, and the fp32 graph alone already disagrees: KL 0.013, top-1
+# 98.0%, perplexity 2.277 against 2.196 on Qwen2.5-0.5B-Instruct over 301 tokens, exact at
+# a -10000 mask (docs/research, finding 37). Llama 3.2 and SmolLM2 match exactly at -100.
+_MTK_QWEN2_MASK = (
+    "MediaTek's runner masks attention with -100, which Qwen2.5's unnormalised scores leak "
+    "through: the fp32 MediaTek graph is at KL 0.013 and 98% top-1 against Hugging Face before "
+    "any quantization (docs/research, finding 37)"
 )
 _MTK_GEMMA3 = "not validated on the MediaTek scripts (they expect model_type gemma3, HF has gemma3_text)"
 _MTK_NO_MODEL = "no model definition for this architecture in ExecuTorch 1.4.0's examples/mediatek"
@@ -69,8 +76,8 @@ FAMILIES: tuple[Family, ...] = (
         ("Lfm2ForCausalLM",),
         {"vulkan": _LFM2_NO_VULKAN, "qnn": _LFM2_NO_QNN},
     ),
-    Family("qwen2_5", ("Qwen2ForCausalLM",)),
-    Family("llama", ("LlamaForCausalLM",), {"mtk": _MTK_LLAMA}),
+    Family("qwen2_5", ("Qwen2ForCausalLM",), {"mtk": _MTK_QWEN2_MASK}),
+    Family("llama", ("LlamaForCausalLM",)),
     Family(
         "gemma3",
         ("Gemma3ForCausalLM",),
@@ -123,6 +130,10 @@ class MtkPlan:
     script: str  # examples/mediatek/model_export_scripts/<script>
     preformatter: str  # examples/mediatek/aot_utils/llm_utils/preformatter_templates/<name>
     num_chunks: int
+    # config.json "tokenizer" for the scripts' resolve_model_classes, when the model_type's
+    # default is wrong: model_type llama defaults to a SentencePiece LlamaTokenizer, and both
+    # Llama 3.2 and SmolLM2 ship only a tokenizer.json, as MediaTek's own llama3 sample does.
+    tokenizer: str | None = None
 
 
 # ExecuTorch 1.4.0 examples/mediatek: export script and chat template per family, the pair
@@ -132,6 +143,7 @@ _MTK_SCRIPTS = {
     "qwen3": ("qwen.py", "qwen3.json", "qwen3"),
     "qwen2_5": ("qwen.py", "qwen.json", "qwen2"),
     "lfm2": ("lfm2.py", "qwen3.json", "lfm2"),
+    "llama": ("llama.py", "llama3.json", "llama"),
 }
 
 
@@ -147,9 +159,19 @@ def mtk_plan(family: Family, config: dict, max_chunks: int) -> MtkPlan:
     c = text_config(config)
     if c.get("model_type") != model_type:
         raise UnsupportedModel(f"model_type {c.get('model_type')!r}, the MediaTek {script} path expects {model_type!r}")
-    if rope_scaling(c) is not None:
+    scaling = rope_scaling(c)
+    tokenizer = None
+    if family.key == "llama":
+        tokenizer = "pretrained_fast"
+        if scaling is None:
+            # SmolLM2: plain RoPE and the ChatML template, not Llama 3's.
+            preformatter = "qwen.json"
+        elif (scaling.get("rope_type") or scaling.get("type")) == "llama3":
+            # Implemented by third_party/executorch/patches/mediatek-rope-theta.patch.
+            scaling = None
+    if scaling is not None:
         raise UnsupportedModel("RoPE scaling is not validated on the MediaTek scripts")
-    return MtkPlan(script, preformatter, mtk_chunks(int(c["num_hidden_layers"]), max_chunks))
+    return MtkPlan(script, preformatter, mtk_chunks(int(c["num_hidden_layers"]), max_chunks), tokenizer)
 
 
 BACKENDS = ("xnnpack", "vulkan", "qnn", "mtk")

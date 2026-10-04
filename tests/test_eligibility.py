@@ -28,10 +28,13 @@ def test_qnn_needs_an_entry_in_executorchs_qualcomm_registry():
     assert "no entry" in verdict.backends["qnn"]
 
 
-def test_mediatek_waits_on_validation_for_llama():
-    verdict = evaluate("meta-llama/Llama-3.2-1B-Instruct")
-    assert "mtk" not in verdict.export_backends
-    assert "rope_type llama3" in verdict.backends["mtk"]
+def test_mediatek_takes_llama_and_refuses_qwen25_for_its_mask():
+    # Llama 3.2 and SmolLM2 match Hugging Face exactly in MediaTek's fp32 graph once the
+    # rope patch is applied; Qwen2.5 leaks through the runner's -100 mask (finding 37).
+    assert "mtk" in evaluate("meta-llama/Llama-3.2-1B-Instruct").export_backends
+    qwen25 = evaluate("Qwen/Qwen2.5-1.5B-Instruct", config=hf_config("Qwen/Qwen2.5-1.5B-Instruct"))
+    assert "mtk" not in qwen25.export_backends
+    assert "-100" in qwen25.backends["mtk"]
 
 
 def test_the_4b_class_is_in_by_name_even_though_it_has_4_02b_parameters():
