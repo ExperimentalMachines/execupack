@@ -4,9 +4,9 @@
 # huggingface_hub below the 1.x the pipeline itself uses. Install torch and torchvision from
 # the CPU index first. mtk_converter and mtk_neuron come from the NeuroPilot Express SDK
 # archive at run time (config/versions.env), never from this repository.
-torch==2.13.0
+torch==2.14.0
 torchao==0.18.0
-executorch==1.4.0
+executorch==1.5.1
 transformers==4.57.6
 tokenizers==0.22.2
 huggingface_hub==0.36.2

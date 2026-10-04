@@ -16,10 +16,10 @@ def test_executorch_pin_matches_the_app_runtime_version():
     assert pins("requirements/export-xnnpack.txt")["executorch"] == settings.load().executorch_version
 
 
-def test_torch_pin_matches_executorch_1_4_0():
-    # ExecuTorch v1.4.0 torch_pin.py: TORCH_VERSION = "2.13.0"; install_requirements.py: torchao 0.18.0.
+def test_torch_pin_matches_executorch_1_5_1():
+    # ExecuTorch v1.5.1 torch_pin.py: TORCH_VERSION = "2.14.0"; install_requirements.py: torchao 0.18.0.
     export = pins("requirements/export-xnnpack.txt")
-    assert export["torch"] == "2.13.0"
+    assert export["torch"] == "2.14.0"
     assert export["torchao"] == "0.18.0"
 
 
