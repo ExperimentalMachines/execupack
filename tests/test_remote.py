@@ -11,7 +11,7 @@ import subprocess
 import pytest
 from conftest import TOTAL_PARAMS, hf_config
 
-from pipeline import export_mtk, export_xnnpack, families, remote, settings, sizing
+from pipeline import export_mtk, export_qnn, export_xnnpack, families, remote, settings, sizing
 
 CFG = settings.load()
 WINDOWS = (2048, 4096, 8192, 16384, 32768)
@@ -105,6 +105,35 @@ def test_the_neuropilot_sdk_is_fetched_at_run_time_and_never_put_in_the_image():
 def test_a_mediatek_window_gets_more_cores_and_time_as_it_grows(window, cores, minutes):
     assert export_mtk.modal_shape(window) == (cores, minutes)
     assert cores <= 64
+
+
+def test_the_qualcomm_workflow_sends_each_window_with_its_memory_cores_and_minutes():
+    text = (settings.ROOT / ".github/workflows/export-qnn.yml").read_text(encoding="utf-8")
+    assert '--memory-mib "$MEMORY_MIB" --cpu "$CORES" --timeout-minutes "$SANDBOX_MINUTES"' in text
+    assert "--requirements requirements/export-qnn.txt" in text
+    # QAIRT is downloaded inside each Sandbox now; no Actions cache keeps a copy.
+    assert "actions/cache" not in text
+    longest = max(minutes for _, _, minutes in export_qnn.QNN_MODAL_SHAPES)
+    assert f"timeout-minutes: {longest + 30}" in text
+
+
+@pytest.mark.parametrize(
+    ("model_id", "cores"),
+    [
+        ("HuggingFaceTB/SmolLM2-360M-Instruct", 16),
+        ("Qwen/Qwen3-0.6B", 16),
+        ("meta-llama/Llama-3.2-1B-Instruct", 16),
+        ("Qwen/Qwen3-1.7B", 32),
+        ("Qwen/Qwen3-4B", 32),
+    ],
+)
+def test_a_qualcomm_export_fits_a_sandbox_at_every_window_it_is_given(model_id, cores):
+    for window in (2048, 4096, 8192):
+        need, got_cores, minutes = export_qnn.modal_request(TOTAL_PARAMS[model_id], window)
+        # Qwen3-0.6B measured 15.6 GB of RSS at 2k and 4k (findings 8 and 10): asked for above that.
+        assert need >= 15_702_085_632
+        assert remote.memory_request(need, CFG.modal) is not None
+        assert got_cores == cores and minutes < 1440  # Modal's Sandbox limit is 24 hours
 
 
 def test_the_matrix_entry_shape_the_workflow_reads():

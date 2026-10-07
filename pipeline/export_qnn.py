@@ -46,6 +46,32 @@ HYBRID_METHODS = ("kv_forward", "prefill_forward")
 QNN_BACKEND_ID = "QnnBackend"
 META_FILES = ("original/consolidated.00.pth", "original/params.json", "original/tokenizer.model")
 SOC_NAMES = {"SM8650": "Snapdragon 8 Gen 3", "SM8750": "Snapdragon 8 Elite"}
+
+# The Modal Sandbox a window is given (pipeline/remote.py). Only Qwen3-0.6B has been measured:
+# 15.6 GB of peak RSS at both 2k and 4k (findings 8 and 10), on 16 GB runners with swap, so
+# that figure is a floor on its need rather than the need. Modal treats a plain memory request
+# as a minimum, not a limit (the Sandbox may use more) and bills the higher of request and
+# use, so this asks for a modest share and lets the peak burst past it; each report records
+# the peak, which is what to refit this against.
+QNN_BYTES_PER_PARAM = 20
+QNN_FLOOR_BYTES = 24 * 2**30
+# The window enters through calibration and the two graphs' attention, at most half again by 8k.
+QNN_WINDOW_SCALE = 16384
+# Time grows with the model and faster than the window: Qwen3-0.6B took 2,434 s at 2k and
+# 5,987 s at 4k on a 4 vCPU runner (findings 8 and 10). (largest parameter count, physical
+# cores, Sandbox minutes); the minutes cost nothing unless a run hangs.
+QNN_MODAL_SHAPES = ((1_300_000_000, 16, 720), (4_500_000_000, 32, 1380))
+
+
+def modal_request(params: int, window: int) -> tuple[int, int, int]:
+    """Memory in bytes, physical cores and minutes for a QNN export on Modal."""
+    need = max(QNN_FLOOR_BYTES, params * QNN_BYTES_PER_PARAM) * (1 + window / QNN_WINDOW_SCALE)
+    for largest, cores, minutes in QNN_MODAL_SHAPES:
+        if params <= largest:
+            return int(need), cores, minutes
+    raise ValueError(f"no Modal shape for a {params:,}-parameter QNN export")
+
+
 EXECUTORCH_SOURCE_FILES = settings.ROOT / "third_party" / "executorch"
 
 

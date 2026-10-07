@@ -182,6 +182,40 @@ def _mtk_matrix(args) -> int:
     return 0
 
 
+def _qnn_matrix(args) -> int:
+    """One matrix entry per window for the Qualcomm export, with the Modal Sandbox it gets
+    (export_qnn.modal_request), from Hub metadata alone."""
+    from pipeline import export_qnn, hub, remote, settings
+
+    cfg = settings.load()
+    source = hub.fetch(args.model, args.revision)
+    if not source.total_params:
+        print(f"no parameter count for {args.model}", file=sys.stderr)
+        return 2
+    if args.contexts:
+        try:
+            wanted = json.loads(args.contexts)
+        except ValueError:
+            wanted = [v for v in args.contexts.strip("[]").split(",") if v.strip()]
+        if not isinstance(wanted, list):
+            wanted = [wanted]
+    else:
+        wanted = list(cfg.context_tiers)
+
+    entries = []
+    for window in sorted({int(v) for v in wanted}, reverse=True):
+        need, cores, minutes = export_qnn.modal_request(source.total_params, window)
+        memory_mib = remote.memory_request(need, cfg.modal)
+        if memory_mib is None:
+            print(f"{window} needs more than Modal allows ({need:,} B)", file=sys.stderr)
+            continue
+        entry = {"context": window, "memory_mib": memory_mib, "cpu": cores, "timeout_minutes": minutes}
+        print(f"{window}: {entry}", file=sys.stderr)
+        entries.append(entry)
+    print(json.dumps(entries))
+    return 0
+
+
 def _export_matrix(args) -> int:
     """One matrix entry per window for an export_llm backend: the window and the smallest
     runner that can build it (export_xnnpack.pick_runner), from the model's config alone.
@@ -473,6 +507,12 @@ def main(argv: list[str] | None = None) -> int:
         "counts the real file and its disk gate catches a mismatch",
     )
     matrix.set_defaults(func=_mtk_matrix)
+
+    qnn_matrix = commands.add_parser("qnn-matrix", help="windows and the Modal Sandbox each gets, as a CI matrix")
+    qnn_matrix.add_argument("model")
+    qnn_matrix.add_argument("--revision", default="main")
+    qnn_matrix.add_argument("--contexts", default="", help="JSON or comma-separated windows; empty for every tier")
+    qnn_matrix.set_defaults(func=_qnn_matrix)
 
     export_matrix = commands.add_parser(
         "export-matrix", help="windows and the runner each needs for an export_llm backend, as a CI matrix"
