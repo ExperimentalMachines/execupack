@@ -36,7 +36,7 @@ def test_memory_sampler_keeps_the_peak_of_ram_plus_swap_within_one_sample(tmp_pa
 
 
 def test_memory_sampler_is_a_no_op_without_proc(tmp_path):
-    with exporting.MemorySampler(interval=3600, meminfo=tmp_path / "missing") as sampler:
+    with exporting.MemorySampler(interval=3600, meminfo=tmp_path / "missing", cgroup=()) as sampler:
         pass
     assert set(sampler.result().values()) == {None}
 
