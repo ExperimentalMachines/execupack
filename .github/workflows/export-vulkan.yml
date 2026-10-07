@@ -35,7 +35,7 @@ concurrency:
 jobs:
   targets:
     # Hub metadata only, no model download: reads config.json and does arithmetic.
-    runs-on: namespace-profile-execupack
+    runs-on: ubuntu-latest
     env:
       # Sizing reads the model's config, and gated repos (Llama 3.2) need the token.
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -71,7 +71,7 @@ jobs:
     # the window squared, from ~5 GiB at 2k to ~134 GiB for Qwen3-4B at 32k. This job only
     # sends it, waits, and publishes what comes back. Modal has no GPU either, so the file
     # gets a structural check (findings 28, 30).
-    runs-on: namespace-profile-execupack
+    runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}

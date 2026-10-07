@@ -25,9 +25,9 @@ jobs:
         context: ${{ fromJSON(inputs.contexts) }}
     # The causal masks grow with the window squared and have killed a 32k export before
     # (docs/research findings 2 and 28). x86, because the wheel's C++ TextLLMRunner raises
-    # `IndexError: stoi` on aarch64 (finding 30). The Namespace profile has no swap, so the
-    # swap asked for below is not added there.
-    runs-on: namespace-profile-execupack
+    # `IndexError: stoi` on aarch64 (finding 30). This probes the runner it lands on, a
+    # GitHub-hosted one; the exports themselves run on Modal.
+    runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -48,8 +48,8 @@ jobs:
           swap-gib: "24"
 
       - name: Export at a forced window
-        # Exit 4 is the gate refusing a window this runner cannot hold (16k and up for
-        # Qwen3-0.6B on the Namespace profile): a measurement in itself, not a failure.
+        # Exit 4 is the gate refusing a window this runner cannot hold: a measurement in
+        # itself, not a failure.
         run: |
           set +e
           python -m pipeline export-xnnpack "$MODEL_ID" --context "$CONTEXT" --out "$WORK_DIR/out" --work "$WORK_DIR/work"

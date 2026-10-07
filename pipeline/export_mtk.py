@@ -133,8 +133,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # window, physical cores, minutes). Streaming calibration runs a corpus that fills the window
 # through the model twice, so the time and not the memory grows with the window: the 16k
 # 8-chunk LFM2.5-1.2B build took 3,235 s on 8 physical cores (16 vCPUs, finding 39), and a
-# 32k calibration runs twice the tokens over twice the cache.
-MODAL_SHAPES = ((4096, 8, 240), (16384, 16, 330), (32768, 32, 600))
+# 32k calibration runs twice the tokens over twice the cache. The minutes stay inside the 360 a
+# GitHub-hosted job may wait, so the long windows get more cores instead.
+MODAL_SHAPES = ((4096, 8, 240), (16384, 32, 330), (32768, 64, 330))
 # The smallest Sandbox: lowering and MediaTek's compiler service on top of the estimate.
 MODAL_FLOOR_BYTES = 16 * 2**30
 # From this window up, a hybrid is cut so no chunk holds two attention layers (finding 39).

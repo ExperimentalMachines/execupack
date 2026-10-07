@@ -19,7 +19,7 @@ def flag(command, name):
 
 def test_compile_only_command_for_a_registered_checkpoint(tmp_path):
     command = export_qnn.llama_command("qwen3-0_6b", "SM8650", CFG.qnn, tmp_path / "art", None)
-    assert command[1:3] == ["-m", "executorch.examples.qualcomm.oss_scripts.llama.llama"]
+    assert command[1:3] == ["-m", "pipeline.qnn_launch"]
     assert "--compile_only" in command
     assert flag(command, "--decoder_model") == "qwen3-0_6b"
     assert flag(command, "--soc_model") == "SM8650"
@@ -290,3 +290,32 @@ def test_publish_refuses_a_tokenizer_inside_a_backend_folder(tmp_path):
     (folder / "tokenizer.json").write_text("{}")
     with pytest.raises(ValueError, match="repo root"):
         publish.publish_hf(tmp_path, "qnn", "SM8650")
+
+
+def test_the_launcher_runs_the_qualcomm_script():
+    from pipeline import qnn_launch
+
+    assert qnn_launch.SCRIPT == "executorch.examples.qualcomm.oss_scripts.llama.llama"
+
+
+def test_a_tokenizer_without_bos_gets_the_end_of_text_token_as_prefix():
+    # Qwen3: tokenizer_config has bos_token null, so pytorch_tokenizers sets bos_id = None.
+    # eager_eval imports lm_eval and transformers, which the export image has and CI does not.
+    try:
+        from executorch.examples.models.llama.evaluate import eager_eval
+    except (ImportError, AttributeError) as error:
+        pytest.skip(f"eager_eval needs requirements/export-qnn.txt: {error}")
+
+    from pipeline import qnn_launch
+
+    qnn_launch.patch()
+
+    class Tokenizer:
+        bos_id = None
+        eos_id = 151645
+
+    wrapper = eager_eval.EagerEvalWrapper.__new__(eager_eval.EagerEvalWrapper)
+    wrapper._tokenizer = Tokenizer()
+    assert wrapper.prefix_token_id == 151645
+    Tokenizer.bos_id = 1
+    assert wrapper.prefix_token_id == 1

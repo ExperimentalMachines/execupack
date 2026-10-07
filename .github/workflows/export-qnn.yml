@@ -39,7 +39,7 @@ concurrency:
 jobs:
   targets:
     # Hub metadata only, no model download: a parameter count and arithmetic.
-    runs-on: namespace-profile-execupack
+    runs-on: ubuntu-latest
     env:
       # Llama 3.2 is gated, so even its metadata needs the token.
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -85,9 +85,10 @@ jobs:
     # and the QAIRT SDK is x86_64. The wheel downloads QAIRT inside the Sandbox on first
     # import (export_qnn.qnn_sdk), so the SDK is fetched from Qualcomm on every run and never
     # stored in an image, a cache or the Volume.
-    runs-on: namespace-profile-execupack
-    # Past the longest Sandbox (export_qnn.QNN_MODAL_SHAPES), so the Sandbox times out first.
-    timeout-minutes: 1410
+    runs-on: ubuntu-latest
+    # GitHub-hosted jobs stop at 360 minutes: past the longest Sandbox (export_qnn.QNN_MODAL_SHAPES),
+    # so the Sandbox is what times out and says so.
+    timeout-minutes: 350
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}

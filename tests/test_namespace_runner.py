@@ -1,4 +1,4 @@
-"""The configured runner: one Namespace profile, and what it can and cannot build.
+"""The Namespace profile the jobs ran on until 2026-10-07, and why everything left it.
 
 namespace-profile-execupack replaced the Blacksmith tiers on 2026-10-07. Its own CI run
 measured 4 x86_64 CPUs, MemTotal 16,438,740 kB, a 101 GB overlay disk shared by / and /mnt,
@@ -41,13 +41,18 @@ def test_every_export_recipe_runs_on_modal():
         assert [t.label for t in getattr(CFG, backend).runner_tiers] == [settings.MODAL_TIER], backend
 
 
-def test_no_workflow_runs_anywhere_else():
+def test_every_job_runs_on_a_github_hosted_runner_and_waits_on_modal():
+    # Since 2026-10-07 the work runs on Modal and no job holds a Namespace runner: the profile
+    # took six jobs at a time, so exports queued behind ones that were only waiting on Modal.
     for workflow in (settings.ROOT / ".github/workflows").glob("*.yml"):
         text = workflow.read_text(encoding="utf-8")
-        assert "blacksmith" not in text, workflow.name
+        assert "blacksmith" not in text and PROFILE not in text, workflow.name
         for line in text.splitlines():
             if line.strip().startswith("runs-on:") and "${{" not in line:
-                assert line.split("runs-on:")[1].strip() == PROFILE, f"{workflow.name}: {line.strip()}"
+                assert line.split("runs-on:")[1].strip() == "ubuntu-latest", f"{workflow.name}: {line.strip()}"
+            if line.strip().startswith("timeout-minutes:"):
+                # A GitHub-hosted job is stopped at 360 minutes whatever it asks for.
+                assert int(line.split(":")[1]) <= 360, f"{workflow.name}: {line.strip()}"
 
 
 @pytest.mark.parametrize(

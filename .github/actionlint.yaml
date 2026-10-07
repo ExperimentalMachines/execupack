@@ -1,4 +1,0 @@
-# The Namespace runner profile every workflow runs on (runs-on: namespace-profile-execupack).
-self-hosted-runner:
-  labels:
-    - namespace-profile-execupack

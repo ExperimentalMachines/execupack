@@ -40,7 +40,7 @@ concurrency:
 jobs:
   watch:
     # Hub metadata only, no model download.
-    runs-on: namespace-profile-execupack
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
