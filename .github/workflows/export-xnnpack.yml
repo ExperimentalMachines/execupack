@@ -43,7 +43,7 @@ concurrency:
 jobs:
   targets:
     # Hub metadata only, no model download: reads config.json and does arithmetic.
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: namespace-profile-execupack
     env:
       # Sizing reads the model's config, and gated repos (Llama 3.2) need the token.
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -67,10 +67,12 @@ jobs:
           echo "$entries"
           echo "entries=$entries" >>"$GITHUB_OUTPUT"
           echo "contexts=$(python3 -c 'import json,sys; print(json.dumps([e["context"] for e in json.loads(sys.argv[1])]))' "$entries")" >>"$GITHUB_OUTPUT"
-          # The solve holds the fp32 model (16 GB for a 4B) and one layer's Hessians. Every
-          # solve so far, up to LFM2.5-2.6B, fit the 24 GB size; past 3B it gets the 48 GB one.
+          # The solve holds the fp32 model (16 GB for a 4B) and one layer's Hessians. On
+          # Blacksmith every solve up to LFM2.5-2.6B fit 23.4 GiB and past 3B took 48 GB. One
+          # Namespace profile (15.7 GiB) now runs it; the models that would not fit it have no
+          # window that fits an export either, so their solve is skipped with the empty matrix.
           params=$(python3 -c 'import sys; from pipeline import hub; print(hub.fetch(sys.argv[1], sys.argv[2]).total_params or 0)' "$MODEL_ID" "$REVISION")
-          if [ "$params" -gt 3000000000 ]; then solve=blacksmith-16vcpu-ubuntu-2404-arm; else solve=blacksmith-8vcpu-ubuntu-2404-arm; fi
+          solve=namespace-profile-execupack
           echo "solve runner: $solve ($params parameters)"
           echo "solve_runner=$solve" >>"$GITHUB_OUTPUT"
 
@@ -79,9 +81,8 @@ jobs:
     # the KV cache and the masks, never the weights. Every window's export reuses this
     # artifact, which is why it is worth a job of its own.
     needs: targets
-    if: ${{ inputs.gptq }}
-    # ARM like the export: the solve works on the eager PyTorch module and never loads the
-    # C++ runner, which is the only thing aarch64 cannot do (finding 30).
+    # Nothing to solve for when no window fits a runner (an empty matrix).
+    if: ${{ inputs.gptq && needs.targets.outputs.entries != '[]' }}
     # Sized on memory: it holds the fp32 model and one layer's Hessians (targets job).
     runs-on: ${{ needs.targets.outputs.solve_runner }}
     timeout-minutes: 350
@@ -117,15 +118,16 @@ jobs:
 
   export:
     needs: [targets, solve]
-    if: ${{ always() && needs.targets.result == 'success' && needs.solve.result != 'failure' }}
+    # An empty matrix is an error to GitHub, so a model no runner can carry stops at targets.
+    if: ${{ always() && needs.targets.result == 'success' && needs.targets.outputs.entries != '[]' && needs.solve.result != 'failure' }}
     strategy:
       fail-fast: false
       matrix:
         entry: ${{ fromJSON(needs.targets.outputs.entries) }}
     # Sized per window by the targets job: every attention layer holds a window x window
-    # causal mask, so the fixed 24 GB ARM runner this used to be could not carry 32k for any
-    # Qwen3, Qwen2.5, Llama-3.2-3B or SmolLM2 export. x86 tiers, for the 128 GB one (ARM tops
-    # out at 96); the export is arch-clean and the smoke test stays in its own x86 job.
+    # causal mask, so the need grows with the window squared, and a window no tier in
+    # xnnpack.runner_tiers can carry is left out. Since 2026-10-07 that tier is the 15.7 GiB
+    # Namespace profile (x86, no swap). The smoke test stays in its own job (verify).
     runs-on: ${{ matrix.entry.runner }}
     timeout-minutes: 350
     env:
@@ -185,7 +187,7 @@ jobs:
 
   verify:
     # The smoke test, and only then the publish. ExecuTorch's runner raises IndexError: stoi
-    # on aarch64 (finding 30), so this is the one job that has to be x86; it loads the .pte
+    # on aarch64 (finding 30), so this job has to be x86, as every job is now; it loads the .pte
     # the export built and asks the same question through the same C++ runner the app uses.
     needs: [targets, export]
     # Not `needs.export.result == 'success'`: the export matrix is fail-fast: false so that
@@ -195,12 +197,12 @@ jobs:
     # verified and never published because of it. Each verify job already stands down on
     # its own when its window uploaded no artifact, which is the per-window check this
     # should have relied on all along.
-    if: ${{ always() && needs.targets.result == 'success' }}
+    if: ${{ always() && needs.targets.result == 'success' && needs.targets.outputs.entries != '[]' }}
     strategy:
       fail-fast: false
       matrix:
         context: ${{ fromJSON(needs.targets.outputs.contexts) }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: namespace-profile-execupack
     timeout-minutes: 60
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}

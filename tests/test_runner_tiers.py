@@ -1,11 +1,12 @@
-"""Per-window runner choice for the export_llm backends (export-vulkan.yml's matrix)."""
+"""Per-window runner choice for the export_llm backends (export-vulkan.yml's matrix), on a
+three-size fleet; what the configured tier itself carries is test_namespace_runner.py."""
 
 import pytest
-from conftest import TOTAL_PARAMS, hf_config
+from conftest import FLEET, TOTAL_PARAMS, hf_config
 
 from pipeline import export_xnnpack, families, settings, sizing
 
-TIERS = settings.load().vulkan.runner_tiers
+TIERS = FLEET
 SMALL, MEDIUM, LARGE = (t.label for t in TIERS)
 GIB = 2**30
 
@@ -20,7 +21,9 @@ def pick(model_id, window):
 
 
 def test_tiers_are_smallest_first():
-    assert [t.ram_bytes for t in TIERS] == sorted(t.ram_bytes for t in TIERS)
+    cfg = settings.load()
+    for tiers in (TIERS, cfg.xnnpack.runner_tiers, cfg.vulkan.runner_tiers, cfg.mtk.runner_tiers):
+        assert [t.ram_bytes for t in tiers] == sorted(t.ram_bytes for t in tiers)
 
 
 @pytest.mark.parametrize(
@@ -61,7 +64,7 @@ def test_the_vulkan_need_does_not_inherit_the_xnnpack_headroom_at_small_windows(
 
 
 def test_when_nothing_holds_it_in_ram_the_most_ram_wins():
-    # Qwen3-4B at 32k needs more than any tier's RAM: the 32vcpu tier with swap, never a
+    # Qwen3-4B at 32k needs more than any tier's RAM: the largest tier with swap, never a
     # smaller tier paging more of it.
     qwen = arch("Qwen/Qwen3-4B")
     need = sizing.host_need_bytes(qwen, 32768, "vulkan")

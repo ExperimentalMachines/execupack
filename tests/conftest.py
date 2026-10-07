@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from pipeline.hub import SourceModel
+from pipeline.settings import RunnerTier
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -61,3 +62,21 @@ def make_source(model_id: str, config: dict | None = None, **overrides) -> Sourc
 @pytest.fixture
 def source():
     return make_source
+
+
+# A three-size fleet for testing the runner choice itself: the x86 runners execupack used until
+# 2026-10-07, as their export reports measured them (30.9, 62.0 and 113.4 GiB of RAM). The
+# configured tiers are one Namespace profile now (test_namespace_runner.py), but the choice
+# has to keep working the day a larger profile is added beside it.
+FLEET = (
+    RunnerTier("small", 33_229_729_792, 160_000_000_000, 24),
+    RunnerTier("medium", 66_577_858_560, 750_000_000_000, 64),
+    RunnerTier("large", 121_766_014_976, 1_500_000_000_000, 96),
+)
+# The same fleet as config/pipeline.yaml's mtk tiers had it: nominal sizes, and the largest
+# window each was given for a streaming (lfm2.py) calibration.
+MTK_FLEET = (
+    RunnerTier("small", 32_000_000_000, 160_000_000_000, 24, 4096),
+    RunnerTier("medium", 64_000_000_000, 750_000_000_000, 64, 16384),
+    RunnerTier("large", 128_000_000_000, 1_500_000_000_000, 96),
+)

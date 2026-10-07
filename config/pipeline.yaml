@@ -76,21 +76,13 @@ export:
     # built on two hosted runners differs in the embedding's low bits and small models decode
     # different text. Affine is deterministic; leave this false to keep builds reproducible.
     embedding_hqq: false
-    # The same x86 tiers as vulkan.runner_tiers (see there for the measured RAM), picked per
+    # The same tier as vulkan.runner_tiers (see there for what was measured), picked per
     # window by export_xnnpack.pick_runner on sizing.host_need_bytes(..., "xnnpack").
     runner_tiers:
-      - label: blacksmith-8vcpu-ubuntu-2404
-        ram_bytes: 33229729792
-        disk_bytes: 160000000000
-        swap_gib: 24
-      - label: blacksmith-16vcpu-ubuntu-2404
-        ram_bytes: 66577858560
-        disk_bytes: 750000000000
-        swap_gib: 64
-      - label: blacksmith-32vcpu-ubuntu-2404
-        ram_bytes: 121766014976
-        disk_bytes: 1500000000000
-        swap_gib: 96
+      - label: namespace-profile-execupack
+        ram_bytes: 16833269760
+        disk_bytes: 101427666944
+        swap_gib: 0
   vulkan:
     # The GPU delegate runs the same torchao 8da4w linears (backends/vulkan/vulkan-quantization);
     # the file is otherwise the XNNPACK recipe with backend.vulkan in export_llm.
@@ -98,29 +90,23 @@ export:
     group_size: 32
     embedding_quantize: "8,0"
     embedding_hqq: false
-    # x86 Blacksmith runners, smallest first; export_xnnpack.pick_runner gives each window
-    # the first that holds sizing.host_need_bytes in RAM, and when none can, the one with the
-    # most RAM that holds it with swap. The cost is the window, not the model: every
-    # attention layer holds a window x window mask, so Qwen3-4B needs ~22 GiB at 2k and ~134
-    # GiB at 32k, and one fixed size either wastes the small windows or kills the wide ones.
-    # x86 rather than ARM for the largest tier (ARM tops out at 96 GB).
+    # The runners, smallest first; export_xnnpack.pick_runner gives each window the first that
+    # holds sizing.host_need_bytes in RAM, and when none can, the one with the most RAM that
+    # holds it with swap. The cost is the window, not the model: every attention layer holds a
+    # window x window mask, so Qwen3-4B needs ~22 GiB at 2k and ~134 GiB at 32k.
     #
-    # ram_bytes is the smallest MemTotal the runners reported in fifty Vulkan exports
-    # (2026-10-04), not the nominal size: the 32vcpu tier is sold as 128 GB and reported
-    # 113.4 to 124.2 GiB, and 8vcpu and 16vcpu reported 30.9 and 62.0 GiB every time.
+    # Since 2026-10-07 there is one: the Namespace profile namespace-profile-execupack, 4 x86
+    # vCPUs. Its own CI run measured MemTotal 16,438,740 kB, a 101 GB overlay disk shared by /
+    # and /mnt, and no swap, which the container does not allow (swapon: Operation not
+    # permitted), so swap_gib is 0 and a window needs to fit in RAM. A window no tier can carry
+    # is left out of the matrix and recorded as skipped; a larger Namespace profile added here
+    # as a second tier brings the wider windows back. The Blacksmith tiers this replaced (30.9,
+    # 62.0 and 113.4 GiB, with 24 to 96 GiB of swap) are in docs/PLAN.md.
     runner_tiers:
-      - label: blacksmith-8vcpu-ubuntu-2404
-        ram_bytes: 33229729792
-        disk_bytes: 160000000000
-        swap_gib: 24
-      - label: blacksmith-16vcpu-ubuntu-2404
-        ram_bytes: 66577858560
-        disk_bytes: 750000000000
-        swap_gib: 64
-      - label: blacksmith-32vcpu-ubuntu-2404
-        ram_bytes: 121766014976
-        disk_bytes: 1500000000000
-        swap_gib: 96
+      - label: namespace-profile-execupack
+        ram_bytes: 16833269760
+        disk_bytes: 101427666944
+        swap_gib: 0
   qnn:
     # HTP context binaries are compiled per chip and load only on that chip. The benchmark
     # devices (docs/PLAN.md, "Devices"): Snapdragon 8 Elite (Galaxy S25 Ultra) = SM8750.
@@ -150,7 +136,7 @@ export:
     # every prompt's steps at once, each with a full fp32 KV cache at the window, and 2048
     # exhausted a 16.8 GB runner and took it down. The patched scripts pass
     # writer_batch_size=1 so one prompt is resident instead of all nine, which takes the
-    # corpus size out of the peak and puts 2k to 32k within a blacksmith-32vcpu runner.
+    # corpus size out of the peak and put 2k to 32k within the 128 GB runners used until 2026-10-07.
     # This stays at MediaTek's default because it is the floor of the matrix; the windows
     # actually built come from context_tiers through the workflow's contexts input.
     prompt_tokens: 128
@@ -170,32 +156,24 @@ export:
     # window that does not fit is skipped outright rather than calibrated on too little.
     # Each export report still records prompts_used, so a reader can see what was used.
     min_calibration_prompts: 4
-    # x86 Blacksmith runners, smallest first; export_mtk.pick_runner takes the first that
-    # carries a window. x86 because mtk_converter is a cp310 x86 wheel and mtk_neuron is
-    # tagged linux_x86_64, so no ARM tier can run the toolchain at all, whatever its size.
+    # The runners, smallest first; export_mtk.pick_runner takes the first that carries a
+    # window. x86 because mtk_converter is a cp310 x86 wheel and mtk_neuron is tagged
+    # linux_x86_64, so no ARM machine can run the toolchain at all, whatever its size.
     #
     # For qwen.py both numbers bind. Memory is one prompt's calibration steps; disk is every
-    # prompt's, because writer_batch_size=1 moved them to the Arrow cache. The 1.2B at 16k is
-    # the case that shows why disk is listed: it has the RAM for an 8vcpu runner and not the
-    # disk. swap_gib is what the workflow asks prepare-host.sh for on that tier, sized to
-    # leave the cache room on the same filesystem.
+    # prompt's, because writer_batch_size=1 moved them to the Arrow cache. lfm2.py calibrates
+    # in one streaming pass that keeps no step, so time is what binds there: max_window is the
+    # largest window a tier is given, so a calibration lands on cores that finish it inside the
+    # job limit.
     #
-    # lfm2.py calibrates in one streaming pass that keeps no step, so neither grows with the
-    # window much and time is what binds: max_window is the largest window a tier is given,
-    # so a 32k calibration, which runs a quarter of a million tokens through the model twice,
-    # lands on the cores that finish it inside the job limit.
+    # One tier since 2026-10-07, the Namespace profile (vulkan.runner_tiers says what was
+    # measured): 15.7 GiB, no swap, 4 vCPUs. calibration_bytes puts a 1.2B LFM2.5 build at
+    # about 17.4 GiB (15 bytes a parameter, measured on 4-chunk builds), so none is placed; the
+    # 8-chunk 16k build peaked at 13.4 GiB, so a refit for more chunks may bring it back.
+    # max_window 2048 because 4 vCPUs are half the 8 that were given at most 4096.
     runner_tiers:
-      - label: blacksmith-8vcpu-ubuntu-2404
-        ram_bytes: 32000000000
-        disk_bytes: 160000000000
-        swap_gib: 24
-        max_window: 4096
-      - label: blacksmith-16vcpu-ubuntu-2404
-        ram_bytes: 64000000000
-        disk_bytes: 750000000000
-        swap_gib: 64
-        max_window: 16384
-      - label: blacksmith-32vcpu-ubuntu-2404
-        ram_bytes: 128000000000
-        disk_bytes: 1500000000000
-        swap_gib: 96
+      - label: namespace-profile-execupack
+        ram_bytes: 16833269760
+        disk_bytes: 101427666944
+        swap_gib: 0
+        max_window: 2048

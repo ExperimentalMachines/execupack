@@ -57,12 +57,22 @@ fi
 sudo swapoff -a || true
 sudo rm -f /mnt/swapfile /swapfile /mnt/exe-expo.swap /exe-expo.swap
 swap_file="${swap_base%/}/exe-expo.swap"
-sudo fallocate -l "${SWAP_GIB}G" "$swap_file"
-sudo chmod 600 "$swap_file"
-sudo mkswap "$swap_file" >/dev/null
-sudo swapon "$swap_file"
+# Namespace's runners are containers that refuse swapon ("Operation not permitted", measured
+# 2026-10-07 on namespace-profile-execupack). There the export has its RAM and nothing more;
+# the job's own gate reads SwapTotal from /proc/meminfo (exporting.host_budget), so it budgets
+# for what is really there rather than for the swap asked for.
+if [ "$SWAP_GIB" -eq 0 ]; then
+  swap_note="no swap: none asked for"
+elif sudo fallocate -l "${SWAP_GIB}G" "$swap_file" && sudo chmod 600 "$swap_file" \
+   && sudo mkswap "$swap_file" >/dev/null && sudo swapon "$swap_file" 2>/dev/null; then
+  swap_note="swap in $swap_file"
+else
+  sudo rm -f "$swap_file"
+  swap_note="no swap: this runner does not allow it"
+  echo "::warning::This runner does not allow swap; the export has $(free -g | awk '/^Mem:/{print $2}') GiB of RAM and no more."
+fi
 
-show "host after cleanup (work in $work_dir, swap in $swap_file)"
+show "host after cleanup (work in $work_dir, $swap_note)"
 
 if [ -n "${GITHUB_ENV:-}" ]; then
   echo "WORK_DIR=$work_dir" >>"$GITHUB_ENV"

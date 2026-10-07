@@ -11,9 +11,23 @@ permissions:
 jobs:
   test:
     # Lint and unit tests only.
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: namespace-profile-execupack
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Runner
+        # What the Namespace profile really has, read by config/pipeline.yaml's runner_tiers.
+        run: |
+          echo "arch $(uname -m), $(nproc) CPUs"
+          grep -E 'MemTotal|MemAvailable|SwapTotal' /proc/meminfo
+          df -B1 / /mnt 2>/dev/null || df -B1 /
+          if sudo -n fallocate -l 1G /exe-expo-swaptest 2>/dev/null && sudo mkswap /exe-expo-swaptest >/dev/null \
+             && sudo swapon /exe-expo-swaptest; then
+            echo "swap file: works"; sudo swapoff /exe-expo-swaptest
+          else
+            echo "swap file: refused"
+          fi
+          sudo rm -f /exe-expo-swaptest
 
       - name: Read versions
         id: versions
