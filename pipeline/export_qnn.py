@@ -171,6 +171,10 @@ def structural_check(pte: Path, model_mode: str) -> dict:
 
 _SDK_PROBE = """
 import json
+# ExecuTorch 1.5.1 moved the download out of the package's __init__, which now has no side
+# effects (backends/qualcomm/utils/qnn_sdk_setup.py): it happens here or not at all.
+from executorch.backends.qualcomm.utils.qnn_sdk_setup import setup_qnn_sdk
+setup_qnn_sdk()
 from executorch.backends.qualcomm.scripts import download_qnn_sdk as d
 print(json.dumps({
     "version": d.QNN_VERSION,
@@ -193,7 +197,15 @@ def qnn_sdk() -> dict:
     result = subprocess.run([sys.executable, "-c", _SDK_PROBE], capture_output=True, text=True, timeout=1800)
     if result.returncode != 0:
         raise ExportError(f"could not set up the QAIRT SDK:\n{result.stderr[-4000:]}")
-    return json.loads(result.stdout.strip().splitlines()[-1])
+    sdk = json.loads(result.stdout.strip().splitlines()[-1])
+    # The paths are computed, not found: check the download put the libraries there, so a
+    # missing SDK fails here and not as a dlopen error deep in the Qualcomm script.
+    wanted = [Path(sdk["root"]) / "lib" / "x86_64-linux-clang" / "libQnnHtp.so"]
+    wanted += [Path(sdk["libcxx_dir"]) / name for name in sdk["libcxx_files"]]
+    missing = [str(path) for path in wanted if not path.exists()]
+    if missing:
+        raise ExportError(f"the QAIRT SDK setup left no {', '.join(missing)}:\n{result.stderr[-4000:]}")
+    return sdk
 
 
 def soname(filename: str) -> str:
