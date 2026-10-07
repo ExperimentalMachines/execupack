@@ -86,9 +86,9 @@ def test_the_mediatek_workflow_sends_each_window_with_its_memory_cores_and_minut
     assert "--mtk-tools requirements/mtk-tools.txt" in text
     assert "bash scripts/mtk-setup.sh &&" in text
     assert "./.github/actions/setup-export" not in text
-    # The job outlives the longest Sandbox, so the Sandbox is what times out and says so.
-    longest = max(minutes for _, _, minutes in export_mtk.MODAL_SHAPES)
-    assert f"timeout-minutes: {longest + 30}" in text
+    # The job outlives the longest Sandbox, within the 360 minutes a GitHub-hosted job may run.
+    assert max(minutes for _, _, minutes in export_mtk.MODAL_SHAPES) < 350
+    assert "timeout-minutes: 350" in text
 
 
 def test_the_neuropilot_sdk_is_fetched_at_run_time_and_never_put_in_the_image():
@@ -100,7 +100,7 @@ def test_the_neuropilot_sdk_is_fetched_at_run_time_and_never_put_in_the_image():
 
 @pytest.mark.parametrize(
     ("window", "cores", "minutes"),
-    [(2048, 8, 240), (4096, 8, 240), (8192, 16, 330), (16384, 16, 330), (32768, 32, 600)],
+    [(2048, 8, 240), (4096, 8, 240), (8192, 32, 330), (16384, 32, 330), (32768, 64, 330)],
 )
 def test_a_mediatek_window_gets_more_cores_and_time_as_it_grows(window, cores, minutes):
     assert export_mtk.modal_shape(window) == (cores, minutes)
@@ -117,8 +117,8 @@ def test_the_qualcomm_workflow_sends_each_window_with_its_memory_cores_and_minut
     assert "--requirements requirements/export-qnn.txt" in text
     # QAIRT is downloaded inside each Sandbox now; no Actions cache keeps a copy.
     assert "actions/cache" not in text
-    longest = max(minutes for _, _, minutes in export_qnn.QNN_MODAL_SHAPES)
-    assert f"timeout-minutes: {longest + 30}" in text
+    assert max(minutes for _, _, minutes in export_qnn.QNN_MODAL_SHAPES) < 350
+    assert "timeout-minutes: 350" in text
 
 
 @pytest.mark.parametrize(
@@ -127,8 +127,8 @@ def test_the_qualcomm_workflow_sends_each_window_with_its_memory_cores_and_minut
         ("HuggingFaceTB/SmolLM2-360M-Instruct", 16),
         ("Qwen/Qwen3-0.6B", 16),
         ("meta-llama/Llama-3.2-1B-Instruct", 16),
-        ("Qwen/Qwen3-1.7B", 32),
-        ("Qwen/Qwen3-4B", 32),
+        ("Qwen/Qwen3-1.7B", 64),
+        ("Qwen/Qwen3-4B", 64),
     ],
 )
 def test_a_qualcomm_export_fits_a_sandbox_at_every_window_it_is_given(model_id, cores):
@@ -137,7 +137,7 @@ def test_a_qualcomm_export_fits_a_sandbox_at_every_window_it_is_given(model_id, 
         # Qwen3-0.6B measured 15.6 GB of RSS at 2k and 4k (findings 8 and 10): asked for above that.
         assert need >= 15_702_085_632
         assert remote.memory_request(need, CFG.modal) is not None
-        assert got_cores == cores and minutes < 1440  # Modal's Sandbox limit is 24 hours
+        assert got_cores == cores and minutes < 350  # inside the GitHub-hosted job that waits
 
 
 def test_the_matrix_entry_shape_the_workflow_reads():

@@ -28,7 +28,7 @@ jobs:
   audit:
     # x86: the gate runs ExecuTorch's C++ runner through the wheel, which fails on aarch64
     # the same way the verify job does (finding 30).
-    runs-on: namespace-profile-execupack
+    runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}

@@ -4,7 +4,7 @@
         --put "$WORK_DIR/codes.pt" --get "$WORK_DIR/out" \\
         --script 'python -m pipeline export-xnnpack "$MODEL_ID" --context "$CONTEXT" --out "$OUT" --work "$WORK"'
 
-The GitHub job stays small (the Namespace profile) and waits here; the step itself runs in a
+The GitHub job stays small (GitHub-hosted, ubuntu-latest) and waits here; the step itself runs in a
 Sandbox with the memory its window needs, which a fixed runner cannot offer: an export's peak
 grows with the window squared, from a few GiB at 2k to 134 GiB for Qwen3-4B at 32k. Modal
 gives a Sandbox up to 344064 MiB and 64 cores (measured 2026-10-07), with no swap.

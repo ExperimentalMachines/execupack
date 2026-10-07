@@ -51,7 +51,7 @@ concurrency:
 jobs:
   targets:
     # Hub metadata only, no model download: it reads a config.json and does arithmetic.
-    runs-on: namespace-profile-execupack
+    runs-on: ubuntu-latest
     env:
       # The matrix now reads the model's config to size each window's runner, and some of
       # the watched repos are private, so this job needs the token the export job has.
@@ -100,9 +100,10 @@ jobs:
     # export_mtk.MODAL_SHAPES, because streaming calibration's time grows with the window.
     # This job only sends it, waits, and publishes what comes back. Modal's hosts are x86,
     # which mtk_converter 8.13.0 (a cp310 x86 build) and the SDK's libraries need (finding 14).
-    runs-on: namespace-profile-execupack
-    # Past the longest Sandbox (export_mtk.MODAL_SHAPES), so the Sandbox times out first.
-    timeout-minutes: 630
+    runs-on: ubuntu-latest
+    # GitHub-hosted jobs stop at 360 minutes: past the longest Sandbox (export_mtk.MODAL_SHAPES),
+    # so the Sandbox is what times out and says so.
+    timeout-minutes: 350
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}

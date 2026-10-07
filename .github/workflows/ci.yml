@@ -11,12 +11,12 @@ permissions:
 jobs:
   test:
     # Lint and unit tests only.
-    runs-on: namespace-profile-execupack
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Runner
-        # What the Namespace profile really has, read by config/pipeline.yaml's runner_tiers.
+        # What the runner really has, for the record (the exports run on Modal, not here).
         run: |
           echo "arch $(uname -m), $(nproc) CPUs"
           grep -E 'MemTotal|MemAvailable|SwapTotal' /proc/meminfo

@@ -1,8 +1,8 @@
 name: Set up a light job
 description: >-
   Python from config/versions.env and the pipeline's plain requirements, for jobs that only read
-  Hub metadata and do arithmetic (the targets jobs). The Namespace runner's system Python
-  refuses pip installs (PEP 668: externally-managed-environment), so these jobs need their own.
+  Hub metadata and do arithmetic (the targets jobs), on the Python the exports pin rather than
+  the runner's system one (which may refuse pip installs, PEP 668).
 
 runs:
   using: composite

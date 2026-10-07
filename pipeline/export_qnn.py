@@ -58,9 +58,10 @@ QNN_FLOOR_BYTES = 24 * 2**30
 # The window enters through calibration and the two graphs' attention, at most half again by 8k.
 QNN_WINDOW_SCALE = 16384
 # Time grows with the model and faster than the window: Qwen3-0.6B took 2,434 s at 2k and
-# 5,987 s at 4k on a 4 vCPU runner (findings 8 and 10). (largest parameter count, physical
-# cores, Sandbox minutes); the minutes cost nothing unless a run hangs.
-QNN_MODAL_SHAPES = ((1_300_000_000, 16, 720), (4_500_000_000, 32, 1380))
+# 5,987 s at 4k on a 4 vCPU runner (findings 8 and 10), and SmolLM2-135M 1,041 s at 2k on 16
+# Modal cores. (largest parameter count, physical cores, Sandbox minutes). The minutes stay
+# inside the 360 a GitHub-hosted job may wait, so the larger models get more cores instead.
+QNN_MODAL_SHAPES = ((1_300_000_000, 16, 330), (4_500_000_000, 64, 330))
 
 
 def modal_request(params: int, window: int) -> tuple[int, int, int]:

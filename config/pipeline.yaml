@@ -176,8 +176,8 @@ export:
         disk_bytes: 549755813888
         swap_gib: 0
 
-# Modal: where the exports run since 2026-10-07 (pipeline/remote.py). The GitHub jobs stay on
-# the Namespace profile and drive a Sandbox per window, sized to that window, with the repo's
+# Modal: where the exports run since 2026-10-07 (pipeline/remote.py). The GitHub jobs run on
+# GitHub-hosted ubuntu-latest, which caps a job at 360 minutes, and drive a Sandbox per window, sized to that window, with the repo's
 # pipeline inside an image built from the pinned requirements. Limits measured on the
 # workspace that day: 344064 MiB of memory and 64 physical cores per Sandbox, refused above.
 modal:

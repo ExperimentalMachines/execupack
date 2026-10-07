@@ -43,7 +43,7 @@ concurrency:
 jobs:
   targets:
     # Hub metadata only, no model download: reads config.json and does arithmetic.
-    runs-on: namespace-profile-execupack
+    runs-on: ubuntu-latest
     env:
       # Sizing reads the model's config, and gated repos (Llama 3.2) need the token.
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -79,7 +79,7 @@ jobs:
     # Nothing to solve for when no window fits (an empty matrix).
     if: ${{ inputs.gptq && needs.targets.outputs.entries != '[]' }}
     # The solve runs on Modal with the memory targets asked for; this job waits on it.
-    runs-on: namespace-profile-execupack
+    runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -127,7 +127,7 @@ jobs:
     # test through ExecuTorch's C++ runner, then the decision gate against the fp32 model's own
     # answers, and only then does this job publish. They used to be two jobs because the
     # runner fails on aarch64 (finding 30) and the export ran on ARM; on Modal both are x86.
-    runs-on: namespace-profile-execupack
+    runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
