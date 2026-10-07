@@ -1,9 +1,11 @@
 # exe-expo
 
 Exports small open-weight LLMs from Hugging Face to ExecuTorch `.pte` files for the
-[openweights](https://github.com/alpharomercoma/openweights) Android app, on
-[Namespace](https://namespace.so) runners (`namespace-profile-execupack`: 4 x86 vCPUs, 16 GB,
-no swap), with every window checked against that memory before a job is started. Design and decisions: [docs/PLAN.md](docs/PLAN.md).
+[openweights](https://github.com/alpharomercoma/openweights) Android app. The GitHub jobs run
+on a [Namespace](https://namespace.so) runner and send each XNNPACK and Vulkan export, and the
+GPTQ solve, to a [Modal](https://modal.com) Sandbox with the memory that window needs (up to
+336 GiB), so every window from 2k to 32k can be built again; MediaTek and QNN still run on the
+Namespace runner. Design and decisions: [docs/PLAN.md](docs/PLAN.md).
 
 What has shipped to [`experimentalmachines`](https://huggingface.co/experimentalmachines) on
 Hugging Face, and what is built but not published:

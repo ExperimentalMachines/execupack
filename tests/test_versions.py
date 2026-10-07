@@ -56,7 +56,9 @@ def test_backend_requirements_share_their_core_pins():
 
 
 def test_every_requirement_is_pinned():
-    for path in ("dev.txt", "watch.txt", "export-xnnpack.txt", "export-qnn.txt", "export-mtk.txt", "mtk-tools.txt"):
+    files = ("dev.txt", "watch.txt", "modal.txt", "export-xnnpack.txt", "export-qnn.txt", "export-mtk.txt")
+    files += ("mtk-tools.txt",)
+    for path in files:
         for line in (settings.ROOT / "requirements" / path).read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#"):

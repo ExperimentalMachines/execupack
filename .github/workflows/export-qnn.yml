@@ -45,12 +45,12 @@ jobs:
       contexts: ${{ steps.contexts.outputs.contexts }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-light
       - id: socs
         env:
           SOCS: ${{ inputs.socs }}
         run: |
           if [ -z "$SOCS" ]; then
-            python3 -m pip install --quiet pyyaml
             SOCS=$(python3 -c 'import json, yaml; print(json.dumps(yaml.safe_load(open("config/pipeline.yaml"))["export"]["qnn"]["socs"]))')
           fi
           echo "socs=$SOCS" >>"$GITHUB_OUTPUT"
@@ -59,7 +59,6 @@ jobs:
           CONTEXTS: ${{ inputs.contexts }}
         # Accepts a JSON list, one number, or a comma-separated list; empty means every tier.
         run: |
-          python3 -m pip install --quiet pyyaml
           CONTEXTS=$(python3 - "$CONTEXTS" <<'PY'
           import json, sys, yaml
           raw = sys.argv[1].strip()

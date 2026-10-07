@@ -76,12 +76,12 @@ export:
     # built on two hosted runners differs in the embedding's low bits and small models decode
     # different text. Affine is deterministic; leave this false to keep builds reproducible.
     embedding_hqq: false
-    # The same tier as vulkan.runner_tiers (see there for what was measured), picked per
-    # window by export_xnnpack.pick_runner on sizing.host_need_bytes(..., "xnnpack").
+    # The same tier as vulkan.runner_tiers (see there), picked per window by
+    # export_xnnpack.pick_runner on sizing.host_need_bytes(..., "xnnpack").
     runner_tiers:
-      - label: namespace-profile-execupack
-        ram_bytes: 16833269760
-        disk_bytes: 101427666944
+      - label: modal
+        ram_bytes: 360777252864
+        disk_bytes: 549755813888
         swap_gib: 0
   vulkan:
     # The GPU delegate runs the same torchao 8da4w linears (backends/vulkan/vulkan-quantization);
@@ -90,22 +90,20 @@ export:
     group_size: 32
     embedding_quantize: "8,0"
     embedding_hqq: false
-    # The runners, smallest first; export_xnnpack.pick_runner gives each window the first that
-    # holds sizing.host_need_bytes in RAM, and when none can, the one with the most RAM that
-    # holds it with swap. The cost is the window, not the model: every attention layer holds a
-    # window x window mask, so Qwen3-4B needs ~22 GiB at 2k and ~134 GiB at 32k.
+    # Since 2026-10-07 the exports run on Modal (pipeline/remote.py, the modal section below):
+    # each window gets a Sandbox with the memory its sizing.host_need_bytes asks for, so the
+    # tier is Modal's ceiling rather than a machine size. ram_bytes is the largest request Modal
+    # accepts (344064 MiB, measured: a larger one is refused with InvalidError), disk_bytes its
+    # default per-container quota (512 GiB), and there is no swap; a window past the ceiling is
+    # left out. The cost is the window, not the model: every attention layer holds a window x
+    # window mask, so Qwen3-4B needs ~22 GiB at 2k and ~134 GiB at 32k.
     #
-    # Since 2026-10-07 there is one: the Namespace profile namespace-profile-execupack, 4 x86
-    # vCPUs. Its own CI run measured MemTotal 16,438,740 kB, a 101 GB overlay disk shared by /
-    # and /mnt, and no swap, which the container does not allow (swapon: Operation not
-    # permitted), so swap_gib is 0 and a window needs to fit in RAM. A window no tier can carry
-    # is left out of the matrix and recorded as skipped; a larger Namespace profile added here
-    # as a second tier brings the wider windows back. The Blacksmith tiers this replaced (30.9,
-    # 62.0 and 113.4 GiB, with 24 to 96 GiB of swap) are in docs/PLAN.md.
+    # Before: one Namespace profile (15.7 GiB, no swap; finding 40), and before that the
+    # Blacksmith tiers of 30.9, 62.0 and 113.4 GiB with 24 to 96 GiB of swap (docs/PLAN.md).
     runner_tiers:
-      - label: namespace-profile-execupack
-        ram_bytes: 16833269760
-        disk_bytes: 101427666944
+      - label: modal
+        ram_bytes: 360777252864
+        disk_bytes: 549755813888
         swap_gib: 0
   qnn:
     # HTP context binaries are compiled per chip and load only on that chip. The benchmark
@@ -177,3 +175,21 @@ export:
         disk_bytes: 101427666944
         swap_gib: 0
         max_window: 2048
+
+# Modal: where the exports run since 2026-10-07 (pipeline/remote.py). The GitHub jobs stay on
+# the Namespace profile and drive a Sandbox per window, sized to that window, with the repo's
+# pipeline inside an image built from the pinned requirements. Limits measured on the
+# workspace that day: 344064 MiB of memory and 64 physical cores per Sandbox, refused above.
+modal:
+  app: execupack-exports
+  # Volumes v2, so a Sandbox can commit its outputs with `sync` before it exits.
+  volume: execupack-runs
+  # Physical cores (2 vCPUs each). Blacksmith gave the exports 8 to 32 vCPUs.
+  cpu: 8
+  # The sizing estimates were fitted to measured peaks with their own margins; this covers the
+  # rest of the container (Python, the downloads in flight) on top.
+  memory_margin: 1.15
+  max_memory_mib: 344064
+  # Below the 350-minute limit of the GitHub job that waits on it, so the Sandbox is the one
+  # that times out and says so.
+  timeout_minutes: 330

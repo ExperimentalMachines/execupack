@@ -61,12 +61,12 @@ jobs:
       entries: ${{ steps.contexts.outputs.entries }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-light
       - id: socs
         env:
           SOCS: ${{ inputs.socs }}
         run: |
           if [ -z "$SOCS" ]; then
-            python3 -m pip install --quiet pyyaml
             SOCS=$(python3 -c 'import json, yaml; print(json.dumps(yaml.safe_load(open("config/pipeline.yaml"))["export"]["mtk"]["socs"]))')
           fi
           echo "socs=$SOCS" >>"$GITHUB_OUTPUT"
@@ -81,7 +81,6 @@ jobs:
         # disagree about whether a window fits. Memory is one prompt's calibration steps;
         # disk is every prompt's, since writer_batch_size=1 put the rest in the Arrow cache.
         run: |
-          python3 -m pip install --quiet -r requirements/dev.txt
           entries=$(python3 -m pipeline mtk-matrix "$MODEL_ID" --revision "$REVISION" --contexts "$CONTEXTS")
           echo "$entries"
           echo "entries=$entries" >>"$GITHUB_OUTPUT"

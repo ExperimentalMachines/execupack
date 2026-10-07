@@ -1,0 +1,28 @@
+name: Set up a Modal-driven job
+description: >-
+  The light toolchain for a job whose heavy step runs on Modal (pipeline/remote.py): Python,
+  the pipeline's plain requirements and the Modal client, no torch. The step itself runs in a
+  Sandbox sized to it; this job only sends it, waits, and publishes what comes back.
+
+runs:
+  using: composite
+  steps:
+    - name: Read versions
+      id: versions
+      shell: bash
+      run: grep -E '^[A-Z_]+=' config/versions.env >>"$GITHUB_OUTPUT"
+
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: ${{ steps.versions.outputs.PYTHON_VERSION }}
+        cache: pip
+        cache-dependency-path: |
+          requirements/dev.txt
+          requirements/modal.txt
+
+    - name: Install
+      shell: bash
+      run: |
+        python -m pip install -r requirements/dev.txt -r requirements/modal.txt
+        echo "WORK_DIR=$RUNNER_TEMP/exe-expo-work" >>"$GITHUB_ENV"
+        mkdir -p "$RUNNER_TEMP/exe-expo-work"
