@@ -3,11 +3,13 @@ import json
 import subprocess
 
 import pytest
-from conftest import TOTAL_PARAMS, hf_config, load_json
+from conftest import MTK_FLEET, TOTAL_PARAMS, hf_config, load_json
 
 from pipeline import export_mtk, families, manifest, naming, publish, settings
 
 CFG = settings.load()
+# The runner choice is tested on a three-size fleet (conftest); the configured tier is one.
+FLEET = dataclasses.replace(CFG.mtk, runner_tiers=MTK_FLEET)
 
 
 def flag(command, name):
@@ -227,8 +229,8 @@ def test_calibration_memory_estimate_covers_the_measured_peak_and_refuses_what_d
     assert at_512 < 29_592_731_648 / 3
 
     # LFM2.5-1.2B and 2.6B are what this matrix exports: 16 and 30 layers, 8 KV heads, head
-    # dim 64. Every window from 2k to 32k has to fit a blacksmith-32vcpu runner, 128 GB with
-    # the 64 GiB swap the workflow adds, or the window cannot be built there.
+    # dim 64. Every window from 2k to 32k had to fit the 128 GB runner used until 2026-10-07,
+    # with the 64 GiB swap the workflow added, or the window could not be built there.
     budget = 128_000_000_000 + 64 * 1024**3 - 1_000_000_000
     for layers, model_params in ((16, 1_170_340_608), (30, 2_600_000_000)):
         lfm = {
@@ -257,7 +259,7 @@ def test_calibration_disk_is_what_the_runner_tier_has_to_carry():
     cache = export_mtk.calibration_disk_bytes(lfm, at_32k, 9)
     assert cache == 9 * 10 * 65_536 * 32_768  # 193 GB
 
-    # A blacksmith-8vcpu runner has 160 GB and cannot hold it; 16vcpu has 750 GB and can.
+    # The small fleet runner's 160 GB disk cannot hold it; the medium one's 750 GB can.
     assert cache + export_mtk.DISK_MARGIN_BYTES > 160 * 10**9
     assert cache + export_mtk.DISK_MARGIN_BYTES < 750 * 10**9
 
@@ -277,26 +279,26 @@ def test_the_runner_is_sized_by_the_window_and_both_limits_bind():
     lfm26 = dict(lfm12, num_hidden_layers=30)
 
     def pick(config, window, params):
-        tier = export_mtk.pick_runner(config, dataclasses.replace(CFG.mtk, cache_size=window), 9, params)
+        tier = export_mtk.pick_runner(config, dataclasses.replace(FLEET, cache_size=window), 9, params)
         return tier.label if tier else None
 
     # The window sets the size, not the model: the same model wants three different tiers.
-    assert pick(lfm12, 2048, 1_170_340_608) == "blacksmith-8vcpu-ubuntu-2404"
-    assert pick(lfm12, 8192, 1_170_340_608) == "blacksmith-16vcpu-ubuntu-2404"
-    assert pick(lfm12, 32768, 1_170_340_608) == "blacksmith-32vcpu-ubuntu-2404"
+    assert pick(lfm12, 2048, 1_170_340_608) == "small"
+    assert pick(lfm12, 8192, 1_170_340_608) == "medium"
+    assert pick(lfm12, 32768, 1_170_340_608) == "large"
 
     # And the model matters at a fixed window, because both terms carry its shape.
-    assert pick(lfm26, 8192, 2_600_000_000) == "blacksmith-32vcpu-ubuntu-2404"
+    assert pick(lfm26, 8192, 2_600_000_000) == "large"
 
     # Tiers are tried smallest first, so a window that fits the smallest never gets a
     # bigger one: that is the saving this exists for.
-    smallest = CFG.mtk.runner_tiers[0]
+    smallest = FLEET.runner_tiers[0]
     assert pick(lfm12, 2048, 1_170_340_608) == smallest.label
 
     # Nothing is handed a runner that cannot hold it. The 2.6B at 32k needs about 157 GiB
     # against the largest tier's 128 GB, so it is the one window placed on swap, and it is
     # still placed rather than dropped.
-    biggest = CFG.mtk.runner_tiers[-1]
+    biggest = FLEET.runner_tiers[-1]
     assert pick(lfm26, 32768, 2_600_000_000) == biggest.label
     at_32k = dataclasses.replace(CFG.mtk, cache_size=32768)
     need = export_mtk.calibration_bytes(lfm26, at_32k, 9, 2_600_000_000)
@@ -440,18 +442,18 @@ def test_streaming_calibration_keeps_nothing_on_disk_and_barely_grows_with_the_w
 
 def test_streaming_windows_go_to_the_cores_that_finish_them():
     def pick(config, window, params):
-        recipe = dataclasses.replace(CFG.mtk, cache_size=window)
+        recipe = dataclasses.replace(FLEET, cache_size=window)
         tier = export_mtk.pick_runner(config, recipe, 23, params, streaming=True)
         return tier.label if tier else None
 
-    assert pick(LFM12, 2048, 1_170_340_608) == "blacksmith-8vcpu-ubuntu-2404"
-    assert pick(LFM12, 4096, 1_170_340_608) == "blacksmith-8vcpu-ubuntu-2404"
-    assert pick(LFM12, 16384, 1_170_340_608) == "blacksmith-16vcpu-ubuntu-2404"
-    assert pick(LFM12, 32768, 1_170_340_608) == "blacksmith-32vcpu-ubuntu-2404"
+    assert pick(LFM12, 2048, 1_170_340_608) == "small"
+    assert pick(LFM12, 4096, 1_170_340_608) == "small"
+    assert pick(LFM12, 16384, 1_170_340_608) == "medium"
+    assert pick(LFM12, 32768, 1_170_340_608) == "large"
     # The 2.6B's lowering needs more than the smallest tier holds in RAM at any window, and
     # its 32k window is a time question, not a memory one: it no longer needs swap.
-    assert pick(LFM26, 2048, 2_697_198_592) == "blacksmith-16vcpu-ubuntu-2404"
-    biggest = CFG.mtk.runner_tiers[-1]
+    assert pick(LFM26, 2048, 2_697_198_592) == "medium"
+    biggest = FLEET.runner_tiers[-1]
     at_32k = dataclasses.replace(CFG.mtk, cache_size=32768)
     assert export_mtk.calibration_bytes(LFM26, at_32k, 23, 2_697_198_592, streaming=True) < biggest.ram_bytes
 

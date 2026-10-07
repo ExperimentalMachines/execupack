@@ -2,9 +2,8 @@
 
 Exports small open-weight LLMs from Hugging Face to ExecuTorch `.pte` files for the
 [openweights](https://github.com/alpharomercoma/openweights) Android app, on
-[Blacksmith](https://www.blacksmith.sh)'s hosted CI runners: ARM for the GPTQ solve and the
-XNNPACK export, x86 for the runner check before anything publishes, and x86 at 8, 16 or 32
-vCPUs for MediaTek, sized per context window. Design and decisions: [docs/PLAN.md](docs/PLAN.md).
+[Namespace](https://namespace.so) runners (`namespace-profile-execupack`: 4 x86 vCPUs, 16 GB,
+no swap), with every window checked against that memory before a job is started. Design and decisions: [docs/PLAN.md](docs/PLAN.md).
 
 What has shipped to [`experimentalmachines`](https://huggingface.co/experimentalmachines) on
 Hugging Face, and what is built but not published:
@@ -12,8 +11,8 @@ Hugging Face, and what is built but not published:
 | Backend | Status |
 |---|---|
 | XNNPACK (CPU) | **Published**: LFM2.5 1.2B and 2.6B (and their heretic finetunes), Qwen3, Qwen2.5, Llama 3.2, SmolLM2, at every window from 2k to 32k the runner could build. Each window is now compared with its fp32 model before it publishes. Twelve models were published before that gate existed and are being re-checked by **Audit published**; the two audited so far, SmolLM2-135M and 360M, score 0.19 and 0.22 on its prompts against about 0.58 for their fp32 models |
-| MediaTek NeuroPilot (MT6991) | **Published**: LFM2.5 1.2B and 2.6B (and their heretic finetunes) at MediaTek's default 512-token window. The sizing now puts 2k to 32k within the 32-vCPU tier; a 4k export has been built and answered correctly on a Dimensity 9400, and nothing above 512 is published yet. Checked structurally on the runner, which has no NPU |
-| Vulkan (GPU) | Workflow in place, same models and recipe as XNNPACK through ExecuTorch's Vulkan delegate, checked structurally (no GPU on the runner). Nothing published yet |
+| MediaTek NeuroPilot (MT6991) | **Published**: LFM2.5 1.2B and 2.6B (and their heretic finetunes) from 512 up to 8k, and the heretic finetunes at 16k; Qwen3, Llama 3.2 and SmolLM2 at the windows that finished before the 2026-10-04 cancel. Built on Blacksmith runners of up to 128 GB; the Namespace profile used since 2026-10-07 cannot build LFM2.5 at any window (finding 40). Checked structurally on the runner, which has no NPU |
+| Vulkan (GPU) | **Published**: Qwen3, Qwen2.5, Llama 3.2 and SmolLM2 at 2k to 32k, same recipe as XNNPACK through ExecuTorch's Vulkan delegate, checked structurally on the runner (no GPU) and run through both apps on a Mali and two Adreno GPUs (finding 38) |
 | Qualcomm QNN (SM8750; SM8650 optional) | Workflow in place for the checkpoints in ExecuTorch 1.4.0's Qualcomm registry (Qwen3, Qwen2.5 base, Gemma 3 1B, SmolLM2 135M, SmolLM3 3B, Llama 3.2). Nothing published yet |
 | Samsung Exynos (ENN) | Waiting for an LLM path in ExecuTorch (1.4.0 ships the delegate with CNN examples only) |
 | HF watcher (auto-dispatch) | Run by hand: its hourly schedule has been off since 2026-09-19. Dispatches XNNPACK for every model first, then Vulkan, then QNN, then MediaTek; state on the `state` branch |
@@ -79,8 +78,9 @@ stages are 87-93% of it:
 - The first MediaTek export (Qwen3-0.6B, MT6991, 512-token cache) took 1,695 s: calibration
   736 s (43%), NeuroPilot lowering 472 s (28%), over 4 chunks. Its limit was calibration
   memory, which held every prompt at once and pinned every window at 512. Holding one prompt at
-  a time moved the rest to disk, so the runner for each window is now picked by RAM and disk
-  together, and the sizing puts 2k to 32k within the 32-vCPU tier (4k built so far).
+  a time moved the rest to disk, so the runner for each window is picked by RAM and disk
+  together. On the Blacksmith tiers that put 2k to 32k within the 32-vCPU one; on the one
+  Namespace profile used since 2026-10-07 (15.7 GiB, no swap) no LFM2.5 window fits (finding 40).
 
 ## Locally
 

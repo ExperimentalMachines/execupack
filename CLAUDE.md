@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 exe-expo exports small dense open-weight LLMs (≤4B, no MoE) from Hugging Face to ExecuTorch `.pte` files for the
 [openweights](https://github.com/alpharomercoma/openweights) Android app, running entirely on hosted CI runners
-(Blacksmith, Ubuntu ARM for everything except the smoke test: the solve and the export run on `blacksmith-8vcpu-ubuntu-2404-arm`, and a `verify` job on x86 runs ExecuTorch's C++ runner, which fails on aarch64, before anything publishes. See finding 30.) `docs/PLAN.md` holds the decisions, measured costs, phase status and known
+(Namespace since 2026-10-07: every job runs on `namespace-profile-execupack`, 4 x86 vCPUs, 15.7 GiB of RAM and no swap, which the container refuses; a `verify` job runs ExecuTorch's C++ runner before anything publishes. The sizing tiers in `config/pipeline.yaml` are that one profile, so a window that does not fit its RAM is skipped (finding 40); a larger Namespace profile added there as a second tier brings the wider windows back.) `docs/PLAN.md` holds the decisions, measured costs, phase status and known
 limits. Read it before changing sizing, backends or naming, and update it when a decision or measurement changes.
 
 ## Commands

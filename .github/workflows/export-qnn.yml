@@ -39,7 +39,7 @@ concurrency:
 jobs:
   targets:
     # Hub metadata only, no model download.
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: namespace-profile-execupack
     outputs:
       socs: ${{ steps.socs.outputs.socs }}
       contexts: ${{ steps.contexts.outputs.contexts }}
@@ -87,7 +87,7 @@ jobs:
     # Stays on x86: the Qualcomm backend ships only in the executorch Linux x86_64
     # wheel, and the QAIRT SDK it downloads is x86_64 (this workflow checks for
     # libQnnHtp.so under an x86_64 path).
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: namespace-profile-execupack
     timeout-minutes: 350
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}

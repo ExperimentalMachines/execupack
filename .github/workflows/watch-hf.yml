@@ -40,7 +40,7 @@ concurrency:
 jobs:
   watch:
     # Hub metadata only, no model download.
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    runs-on: namespace-profile-execupack
     timeout-minutes: 30
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}

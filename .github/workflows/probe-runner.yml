@@ -11,7 +11,7 @@ on:
         type: string
       contexts:
         description: JSON list of windows, one job each
-        default: "[2048, 16384]"
+        default: "[2048, 8192]"
         type: string
 
 permissions:
@@ -23,15 +23,11 @@ jobs:
       fail-fast: false
       matrix:
         context: ${{ fromJSON(inputs.contexts) }}
-    # Sized on memory, not cores: 32 GB, because the causal masks grow with the window
-    # squared and have killed a 32k export before (docs/research findings 2 and 28). The
-    # CPU knee is not yet measured.
-    # Exports stay on x86 until the runner works on aarch64. The toolchain is arm64-clean and
-    # the export itself succeeded there, but the wheel's C++ TextLLMRunner raises
-    # `IndexError: stoi` on ARM, and that runner is the smoke test: without it a published
-    # file drops from "generated text and answered" to "the methods exist", which is the
-    # standard the QNN and MediaTek programs were withdrawn for (findings 28, 30).
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    # The causal masks grow with the window squared and have killed a 32k export before
+    # (docs/research findings 2 and 28). x86, because the wheel's C++ TextLLMRunner raises
+    # `IndexError: stoi` on aarch64 (finding 30). The Namespace profile has no swap, so the
+    # swap asked for below is not added there.
+    runs-on: namespace-profile-execupack
     timeout-minutes: 120
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -52,7 +48,17 @@ jobs:
           swap-gib: "24"
 
       - name: Export at a forced window
-        run: python -m pipeline export-xnnpack "$MODEL_ID" --context "$CONTEXT" --out "$WORK_DIR/out" --work "$WORK_DIR/work"
+        # Exit 4 is the gate refusing a window this runner cannot hold (16k and up for
+        # Qwen3-0.6B on the Namespace profile): a measurement in itself, not a failure.
+        run: |
+          set +e
+          python -m pipeline export-xnnpack "$MODEL_ID" --context "$CONTEXT" --out "$WORK_DIR/out" --work "$WORK_DIR/work"
+          code=$?
+          if [ "$code" -eq 4 ]; then
+            echo "::notice::Window $CONTEXT skipped: it does not fit this runner."
+            exit 0
+          fi
+          exit "$code"
 
       - name: Summary
         if: always()
