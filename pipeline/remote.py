@@ -57,6 +57,10 @@ PASSTHROUGH = (
     "MTK_MAX_CHUNKS",
     "MTK_PRECISION",
     "MTK_PROMPT_TOKENS",
+    # manifest.run_info: each export report links the GitHub run that built it.
+    "GITHUB_SERVER_URL",
+    "GITHUB_REPOSITORY",
+    "GITHUB_RUN_ID",
 )
 # MediaTek's tools in the image (scripts/mtk-setup.sh adds the NeuroPilot wheels at run time).
 MTK_VENV = "/opt/mtk-venv"

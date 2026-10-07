@@ -81,6 +81,11 @@ def host_info() -> dict:
     return info
 
 
+# The container's own memory in use, cgroup v2 then v1. On a Modal Sandbox /proc/meminfo is the
+# host's (pipeline/remote.py), so peak_in_use_bytes there counts other tenants; this does not.
+CGROUP_MEMORY = (Path("/sys/fs/cgroup/memory.current"), Path("/sys/fs/cgroup/memory/memory.usage_in_bytes"))
+
+
 class MemorySampler:
     """Samples /proc/meminfo while an export runs.
 
@@ -92,9 +97,16 @@ class MemorySampler:
     (docs/research, finding 23).
     """
 
-    def __init__(self, interval: float = 5.0, meminfo: Path = Path("/proc/meminfo")):
+    def __init__(
+        self,
+        interval: float = 5.0,
+        meminfo: Path = Path("/proc/meminfo"),
+        cgroup: tuple[Path, ...] = CGROUP_MEMORY,
+    ):
         self.interval = interval
         self.meminfo = meminfo
+        self.cgroup = next((path for path in cgroup if path.exists()), None)
+        self.peak_cgroup = None
         self.peak_swap_used = None
         self.min_available = None
         self.peak_in_use = None
@@ -103,6 +115,12 @@ class MemorySampler:
         self._thread = None
 
     def sample(self) -> None:
+        if self.cgroup is not None:
+            try:
+                used = int(self.cgroup.read_text().split()[0])
+                self.peak_cgroup = max(used, self.peak_cgroup or 0)
+            except (OSError, ValueError, IndexError):
+                pass
         if not self.meminfo.exists():
             return
         fields = {}
@@ -142,6 +160,7 @@ class MemorySampler:
             "min_mem_available_bytes": self.min_available,
             "peak_in_use_bytes": self.peak_in_use,
             "peak_in_use_at": self.peak_in_use_at,
+            "peak_cgroup_bytes": self.peak_cgroup,
         }
 
 

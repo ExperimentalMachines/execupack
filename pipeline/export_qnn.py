@@ -51,8 +51,8 @@ SOC_NAMES = {"SM8650": "Snapdragon 8 Gen 3", "SM8750": "Snapdragon 8 Elite"}
 # 15.6 GB of peak RSS at both 2k and 4k (findings 8 and 10), on 16 GB runners with swap, so
 # that figure is a floor on its need rather than the need. Modal treats a plain memory request
 # as a minimum, not a limit (the Sandbox may use more) and bills the higher of request and
-# use, so this asks for a modest share and lets the peak burst past it; each report records
-# the peak, which is what to refit this against.
+# use, so this asks for a modest share and lets the peak burst past it. Refit it against each
+# report's peak_rss_export_bytes and peak_cgroup_bytes; on Modal peak_in_use_bytes is the host's.
 QNN_BYTES_PER_PARAM = 20
 QNN_FLOOR_BYTES = 24 * 2**30
 # The window enters through calibration and the two graphs' attention, at most half again by 8k.

@@ -167,3 +167,20 @@ def test_a_failed_sync_fails_a_step_that_had_succeeded(tmp_path):
     # A step that already failed keeps its own status.
     skipped = remote.wrap("exit 4").replace(f"sync {remote.VOLUME_MOUNT}", "false")
     assert subprocess.run(["bash", "-c", skipped], env=env, capture_output=True).returncode == 4
+
+
+def test_the_run_that_built_a_file_reaches_the_sandbox():
+    assert {"GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"} <= set(remote.PASSTHROUGH)
+
+
+def test_the_container_peak_is_read_from_its_cgroup(tmp_path):
+    from pipeline.exporting import MemorySampler
+
+    current = tmp_path / "memory.current"
+    current.write_text("3221225472\n")
+    sampler = MemorySampler(meminfo=tmp_path / "missing", cgroup=(tmp_path / "absent", current))
+    sampler.sample()
+    current.write_text("1073741824\n")
+    sampler.sample()
+    assert sampler.result()["peak_cgroup_bytes"] == 3221225472
+    assert MemorySampler(meminfo=tmp_path / "missing", cgroup=()).result()["peak_cgroup_bytes"] is None
