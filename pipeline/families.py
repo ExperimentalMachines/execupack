@@ -152,6 +152,28 @@ def mtk_chunks(n_layers: int, max_chunks: int) -> int:
     return next(n for n in range(min(max_chunks, n_layers), 0, -1) if n_layers % n == 0)
 
 
+def mtk_chunks_one_attention_each(config: dict) -> int | None:
+    """Fewest even chunks that leave no chunk more than one attention layer, for a hybrid.
+
+    What the 16k LFM2.5 builds needed (docs/research, finding 39): 8 for the 1.2B (attention
+    at 2, 5, 8, 10, 12, 14 of 16), where 4 chunks put two in a chunk and lost the compiler.
+    None for a model whose every layer attends, where the rule would mean a chunk per layer.
+    """
+    c = text_config(config)
+    layer_types = c.get("layer_types")
+    if not layer_types or attending_layers(c) is None:
+        return None
+    n_layers = len(layer_types)
+    for chunks in range(1, n_layers + 1):
+        if n_layers % chunks:
+            continue
+        size = n_layers // chunks
+        groups = [layer_types[i : i + size] for i in range(0, n_layers, size)]
+        if all(sum(1 for t in group if t != "conv") <= 1 for group in groups):
+            return chunks
+    return None
+
+
 def mtk_plan(family: Family, config: dict, max_chunks: int) -> MtkPlan:
     if family.key not in _MTK_SCRIPTS:
         raise UnsupportedModel(f"no MediaTek export script mapped for {family.key}")

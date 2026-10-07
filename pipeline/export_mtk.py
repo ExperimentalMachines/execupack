@@ -129,6 +129,16 @@ STREAMING_CACHE_COPIES = 4
 # 14.4 bytes per parameter, and 17.8 GB for the 1.2B at 4k, so it does not grow with the window.
 LOWERING_BYTES_PER_PARAM = 16
 REPO_ROOT = Path(__file__).resolve().parents[1]
+# On Modal (mtk.runner_tiers "modal"), the cores and Sandbox minutes a window gets: (largest
+# window, physical cores, minutes). Streaming calibration runs a corpus that fills the window
+# through the model twice, so the time and not the memory grows with the window: the 16k
+# 8-chunk LFM2.5-1.2B build took 3,235 s on 8 physical cores (16 vCPUs, finding 39), and a
+# 32k calibration runs twice the tokens over twice the cache.
+MODAL_SHAPES = ((4096, 8, 240), (16384, 16, 330), (32768, 32, 600))
+# The smallest Sandbox: lowering and MediaTek's compiler service on top of the estimate.
+MODAL_FLOOR_BYTES = 16 * 2**30
+# From this window up, a hybrid is cut so no chunk holds two attention layers (finding 39).
+ONE_ATTENTION_PER_CHUNK_FROM = 16384
 TOOL_PACKAGES = ("executorch", "torch", "torchao", "transformers", "mtk_converter", "mtk-neuron")
 
 _LOAD_PROGRAM = """
@@ -293,6 +303,14 @@ def pick_runner(
         if carries(tier, with_swap=True):
             return tier
     return None
+
+
+def modal_shape(window: int) -> tuple[int, int]:
+    """Physical cores and Sandbox minutes for a window on Modal (MODAL_SHAPES)."""
+    for largest, cores, minutes in MODAL_SHAPES:
+        if window <= largest:
+            return cores, minutes
+    raise ValueError(f"no Modal shape for a {window}-token window")
 
 
 def exp_name(weight_dir: Path, precision: str, chunks: int) -> str:
@@ -499,10 +517,12 @@ def run(
     started = time.time()
     hub.download(source, weight_dir)
     tokenizer, licenses = copy_side_files(source, weight_dir, out_dir)
+    # The MediaTek script reads the weights' own config.json: give it the keys it expects
+    # (hub.normalize_config: the first LFM2 checkpoints spell them the older way).
+    model_config = hub.normalize_config(json.loads((weight_dir / "config.json").read_text(encoding="utf-8")))
     if plan.tokenizer:
-        model_config = json.loads((weight_dir / "config.json").read_text(encoding="utf-8"))
         model_config["tokenizer"] = plan.tokenizer
-        (weight_dir / "config.json").write_text(json.dumps(model_config, indent=2), encoding="utf-8")
+    (weight_dir / "config.json").write_text(json.dumps(model_config, indent=2), encoding="utf-8")
     bos, eos = hub.special_token_ids(source)
 
     corpus = None

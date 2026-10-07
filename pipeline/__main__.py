@@ -131,7 +131,7 @@ def _mtk_matrix(args) -> int:
     """
     import dataclasses
 
-    from pipeline import export_mtk, families, hub, settings
+    from pipeline import export_mtk, families, hub, remote, settings
 
     cfg = settings.load()
     source = hub.fetch(args.model, args.revision)
@@ -162,7 +162,22 @@ def _mtk_matrix(args) -> int:
             # that refuses to start teaches less than nine jobs that finish.
             print(f"no runner tier can build a {window}-token window", file=sys.stderr)
             continue
-        entries.append({"context": window, "runner": tier.label, "swap_gib": tier.swap_gib})
+        entry = {"context": window, "runner": tier.label, "swap_gib": tier.swap_gib, "max_chunks": ""}
+        if window >= export_mtk.ONE_ATTENTION_PER_CHUNK_FROM:
+            chunks = families.mtk_chunks_one_attention_each(source.config)
+            if chunks is not None and chunks > cfg.mtk.max_chunks:
+                entry["max_chunks"] = str(chunks)
+        if tier.label == settings.MODAL_TIER:
+            need = export_mtk.calibration_bytes(
+                source.config, recipe, args.prompts, source.total_params, streaming=streaming
+            )
+            entry["memory_mib"] = remote.memory_request(max(need, export_mtk.MODAL_FLOOR_BYTES), cfg.modal)
+            if entry["memory_mib"] is None:
+                print(f"{window} needs more than Modal allows ({need:,} B)", file=sys.stderr)
+                continue
+            entry["cpu"], entry["timeout_minutes"] = export_mtk.modal_shape(window)
+            print(f"{window}: needs {need / 2**30:.1f} GiB, {entry}", file=sys.stderr)
+        entries.append(entry)
     print(json.dumps(entries))
     return 0
 
@@ -484,6 +499,8 @@ def main(argv: list[str] | None = None) -> int:
     modal_run.add_argument("--get", help="local directory that receives $OUT")
     modal_run.add_argument("--env", action="append", help="NAME=VALUE set in the Sandbox (repeatable)")
     modal_run.add_argument("--keep", action="store_true", help="leave the run's files on the Volume")
+    modal_run.add_argument("--timeout-minutes", type=int, default=None, help="default modal.timeout_minutes")
+    modal_run.add_argument("--mtk-tools", help="requirements for MediaTek's Python 3.10 virtualenv in the image")
     modal_run.set_defaults(func=_modal_run)
 
     watch = commands.add_parser("watch", help="check the watched orgs, dispatch exports, update state")

@@ -179,3 +179,33 @@ def test_the_memory_model_uses_the_attending_count():
     plain = dataclasses.replace(arch, attention_layers=None)
     assert sizing.causal_mask_bytes(plain, 1024) == 4 * 1024 * 1024
     assert sizing.kv_cache_bytes(arch, 1024) < sizing.kv_cache_bytes(plain, 1024)
+
+
+def test_the_first_lfm2_checkpoints_are_read_like_lfm25():
+    # LFM2-350M/700M/1.2B name their attention layers full_attn_idxs and their feed-forward
+    # block_ff_dim; hub.normalize_config spells them as LFM2.5 does. Checked against the
+    # weights (safetensors headers, 2026-10-07): q_proj only in layers 2, 5, 8, 10, 12, 14, and
+    # feed-forward widths 4,608 (350M) and 8,192 (1.2B).
+    from pipeline import hub
+
+    for name, width in (("lfm2-350m", 4608), ("lfm2-1.2b", 8192)):
+        raw = load_json(f"{name}.config.json")
+        assert "layer_types" not in raw and "full_attn_idxs" in raw
+        config = hub.normalize_config(raw)
+        attending = [i for i, t in enumerate(config["layer_types"]) if t == "full_attention"]
+        assert attending == [2, 5, 8, 10, 12, 14]
+        assert len(config["layer_types"]) == 16
+        assert families.lfm2_hidden_dim(config) == width
+        # The XNNPACK plan accepts it, so does sizing, and the original config is untouched.
+        assert families.xnnpack_plan(families.family_for(config), config).params["layer_types"] == config["layer_types"]
+        assert families.architecture(config, 1).attention_layers == 6
+        assert "layer_types" not in raw
+
+
+def test_a_config_with_the_newer_keys_is_left_alone():
+    from pipeline import hub
+
+    config = load_json("lfm2.5-350m.config.json")
+    assert hub.normalize_config(config) == config
+    qwen = {"model_type": "qwen3", "num_hidden_layers": 28}
+    assert hub.normalize_config(qwen) is qwen

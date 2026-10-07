@@ -11,7 +11,7 @@ import subprocess
 import pytest
 from conftest import TOTAL_PARAMS, hf_config
 
-from pipeline import export_xnnpack, families, remote, settings, sizing
+from pipeline import export_mtk, export_xnnpack, families, remote, settings, sizing
 
 CFG = settings.load()
 WINDOWS = (2048, 4096, 8192, 16384, 32768)
@@ -78,6 +78,33 @@ def test_the_workflow_sends_each_window_to_modal_with_its_own_memory(workflow):
     assert "MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}" in text
     # The heavy toolchain stays off the runner.
     assert "./.github/actions/setup-export" not in text
+
+
+def test_the_mediatek_workflow_sends_each_window_with_its_memory_cores_and_minutes():
+    text = (settings.ROOT / ".github/workflows/export-mtk.yml").read_text(encoding="utf-8")
+    assert '--memory-mib "$MEMORY_MIB" --cpu "$CORES" --timeout-minutes "$SANDBOX_MINUTES"' in text
+    assert "--mtk-tools requirements/mtk-tools.txt" in text
+    assert "bash scripts/mtk-setup.sh &&" in text
+    assert "./.github/actions/setup-export" not in text
+    # The job outlives the longest Sandbox, so the Sandbox is what times out and says so.
+    longest = max(minutes for _, _, minutes in export_mtk.MODAL_SHAPES)
+    assert f"timeout-minutes: {longest + 30}" in text
+
+
+def test_the_neuropilot_sdk_is_fetched_at_run_time_and_never_put_in_the_image():
+    setup = (settings.ROOT / "scripts/mtk-setup.sh").read_text(encoding="utf-8")
+    assert "sha256sum -c -" in setup and 'rm -rf "$sdk" "$sdk.tar.gz"' in setup
+    image = (settings.ROOT / "pipeline/remote.py").read_text(encoding="utf-8").split("def image(")[1]
+    assert "NEUROPILOT_SDK_URL" not in image.split("def _stream(")[0]
+
+
+@pytest.mark.parametrize(
+    ("window", "cores", "minutes"),
+    [(2048, 8, 240), (4096, 8, 240), (8192, 16, 330), (16384, 16, 330), (32768, 32, 600)],
+)
+def test_a_mediatek_window_gets_more_cores_and_time_as_it_grows(window, cores, minutes):
+    assert export_mtk.modal_shape(window) == (cores, minutes)
+    assert cores <= 64
 
 
 def test_the_matrix_entry_shape_the_workflow_reads():
