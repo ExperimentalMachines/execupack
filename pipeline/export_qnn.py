@@ -94,7 +94,9 @@ def llama_command(
     command = [
         sys.executable,
         "-m",
-        "executorch.examples.qualcomm.oss_scripts.llama.llama",
+        # ExecuTorch's executorch.examples.qualcomm.oss_scripts.llama.llama, with the upstream
+        # fix for tokenizers without a BOS token (pipeline/qnn_launch.py says why).
+        "pipeline.qnn_launch",
         "--decoder_model",
         decoder,
         "--soc_model",
@@ -283,6 +285,8 @@ def run(
     if qairt != expected:
         raise ExportError(f"executorch's QAIRT is {qairt}, config/versions.env pins {expected}")
     env = qnn_env(sdk, work_dir / "qnn-libs", dict(os.environ))
+    # The script runs from work_dir, so `-m pipeline.qnn_launch` needs this repo on the path.
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (str(settings.ROOT), env.get("PYTHONPATH", "")) if p)
 
     started = time.time()
     # The script fetches the weights itself (repo_id in its registry); only Llama 3.2 needs
