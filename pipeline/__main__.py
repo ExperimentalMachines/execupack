@@ -175,7 +175,7 @@ def _export_matrix(args) -> int:
     this sends to a tier is one the job will not refuse, and one no tier can carry is left
     out here instead of being started on a runner it would kill.
     """
-    from pipeline import export_xnnpack, families, hub, settings, sizing
+    from pipeline import export_xnnpack, families, hub, remote, settings, sizing
 
     cfg = settings.load()
     recipe = cfg.vulkan if args.backend == "vulkan" else cfg.xnnpack
@@ -205,10 +205,45 @@ def _export_matrix(args) -> int:
         if tier is None:
             print(f"no runner tier can build a {window}-token window (needs {need:,} B)", file=sys.stderr)
             continue
+        entry = {"context": window, "runner": tier.label, "swap_gib": tier.swap_gib}
+        if tier.label == settings.MODAL_TIER:
+            # The Sandbox is sized to the window, not the tier: what the estimate needs plus
+            # the margin, which pick_runner has already checked is within Modal's ceiling.
+            entry["memory_mib"] = remote.memory_request(need, cfg.modal)
+            if entry["memory_mib"] is None:
+                print(f"{window} needs more than Modal allows ({need:,} B)", file=sys.stderr)
+                continue
         print(f"{window}: {tier.label}, needs {need / 2**30:.1f} GiB", file=sys.stderr)
-        entries.append({"context": window, "runner": tier.label, "swap_gib": tier.swap_gib})
+        entries.append(entry)
     print(json.dumps(entries))
     return 0
+
+
+# The GPTQ solve holds the fp32 model and one layer's Hessians: on Blacksmith every solve up to
+# LFM2.5-2.6B fit 23.4 GiB and Qwen3-4B took the 48 GB size, about 12 bytes a parameter.
+SOLVE_BYTES_PER_PARAM = 12
+SOLVE_FLOOR_BYTES = 16 * 2**30
+
+
+def _solve_memory(args) -> int:
+    """MiB for the solve's Modal Sandbox, from the model's parameter count."""
+    from pipeline import hub, remote, settings
+
+    cfg = settings.load()
+    source = hub.fetch(args.model, args.revision)
+    need = max(SOLVE_FLOOR_BYTES, SOLVE_BYTES_PER_PARAM * (source.total_params or 0))
+    mib = remote.memory_request(need, cfg.modal)
+    if mib is None:
+        print(f"the solve needs more than Modal allows ({need:,} B)", file=sys.stderr)
+        return 2
+    print(mib)
+    return 0
+
+
+def _modal_run(args) -> int:
+    from pipeline import remote
+
+    return remote.main(args)
 
 
 def _export_mtk(args) -> int:
@@ -432,6 +467,24 @@ def main(argv: list[str] | None = None) -> int:
     export_matrix.add_argument("--backend", default="vulkan", choices=["vulkan", "xnnpack"])
     export_matrix.add_argument("--contexts", default="", help="JSON or comma-separated windows; empty for every tier")
     export_matrix.set_defaults(func=_export_matrix)
+
+    solve_memory = commands.add_parser("solve-memory", help="MiB to request for the GPTQ solve on Modal")
+    solve_memory.add_argument("model")
+    solve_memory.add_argument("--revision", default="main")
+    solve_memory.set_defaults(func=_solve_memory)
+
+    modal_run = commands.add_parser(
+        "modal-run", help="run a step in a Modal Sandbox sized to it, and bring its outputs back (pipeline/remote.py)"
+    )
+    modal_run.add_argument("--script", required=True, help="bash run in the repo, with $IN, $OUT and $WORK set")
+    modal_run.add_argument("--memory-mib", type=int, required=True)
+    modal_run.add_argument("--cpu", type=float, default=None, help="physical cores; default modal.cpu")
+    modal_run.add_argument("--requirements", default="requirements/export-xnnpack.txt")
+    modal_run.add_argument("--put", action="append", help="a file or directory to upload to $IN (repeatable)")
+    modal_run.add_argument("--get", help="local directory that receives $OUT")
+    modal_run.add_argument("--env", action="append", help="NAME=VALUE set in the Sandbox (repeatable)")
+    modal_run.add_argument("--keep", action="store_true", help="leave the run's files on the Volume")
+    modal_run.set_defaults(func=_modal_run)
 
     watch = commands.add_parser("watch", help="check the watched orgs, dispatch exports, update state")
     watch.add_argument("--state", required=True, help="state JSON (on the state branch)")

@@ -25,13 +25,18 @@ def arch(model_id):
     return families.architecture(hf_config(model_id), TOTAL_PARAMS[model_id])
 
 
+# What the profile could export if an export_llm backend ran on it, which is why they moved
+# to Modal: the profile as a tier, as config/pipeline.yaml's mtk section records it.
+PROFILE_TIER = CFG.mtk.runner_tiers[0]
+
+
 def windows(model_id, backend):
-    tiers = getattr(CFG, backend).runner_tiers
-    return [w for w in WINDOWS if export_xnnpack.pick_runner(arch(model_id), w, tiers, backend)]
+    return [w for w in WINDOWS if export_xnnpack.pick_runner(arch(model_id), w, (PROFILE_TIER,), backend)]
 
 
-@pytest.mark.parametrize("backend", ["xnnpack", "vulkan", "mtk"])
-def test_every_recipe_runs_on_the_namespace_profile_as_measured(backend):
+@pytest.mark.parametrize("backend", ["mtk"])
+def test_the_recipes_not_on_modal_run_on_the_namespace_profile_as_measured(backend):
+    # XNNPACK and Vulkan moved to Modal the same day (test_remote.py); MediaTek has not yet.
     (tier,) = getattr(CFG, backend).runner_tiers
     assert tier.label == PROFILE
     assert tier.ram_bytes == MEM_TOTAL_BYTES
@@ -66,7 +71,7 @@ def test_no_workflow_runs_anywhere_else():
         ("Qwen/Qwen3-4B", "xnnpack", []),
     ],
 )
-def test_what_the_profile_can_export(model_id, backend, expected):
+def test_what_the_profile_could_export(model_id, backend, expected):
     assert windows(model_id, backend) == expected
 
 

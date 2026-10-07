@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 exe-expo exports small dense open-weight LLMs (≤4B, no MoE) from Hugging Face to ExecuTorch `.pte` files for the
 [openweights](https://github.com/alpharomercoma/openweights) Android app, running entirely on hosted CI runners
-(Namespace since 2026-10-07: every job runs on `namespace-profile-execupack`, 4 x86 vCPUs, 15.7 GiB of RAM and no swap, which the container refuses; a `verify` job runs ExecuTorch's C++ runner before anything publishes. The sizing tiers in `config/pipeline.yaml` are that one profile, so a window that does not fit its RAM is skipped (finding 40); a larger Namespace profile added there as a second tier brings the wider windows back.) `docs/PLAN.md` holds the decisions, measured costs, phase status and known
+(since 2026-10-07 every GitHub job runs on the Namespace profile `namespace-profile-execupack`, 4 x86 vCPUs, 15.7 GiB, no swap; the XNNPACK and Vulkan exports and the GPTQ solve run on **Modal**, each in a Sandbox sized to the step by `pipeline/remote.py` (`python -m pipeline modal-run`): the window's `sizing.host_need_bytes` plus `modal.memory_margin`, up to Modal's 344064 MiB, with the export, the smoke test through ExecuTorch's C++ runner and the decision gate in one Sandbox before the job publishes (finding 41). MediaTek and QNN still run on the Namespace profile, where a window that does not fit its RAM is skipped (finding 40).) `docs/PLAN.md` holds the decisions, measured costs, phase status and known
 limits. Read it before changing sizing, backends or naming, and update it when a decision or measurement changes.
 
 ## Commands
@@ -39,12 +39,12 @@ from the CPU index first, as in `.github/actions/setup-export/action.yml`. Other
   MediaTek; the next stage starts when the previous has nothing queued or running) and idempotent (a run in flight for
   the model counts as dispatched); `requeue` puts cancelled dispatches back. The first run only seeds the state; existing models are exported via the
   `backfill` input. `watch.WORKFLOWS` maps backend → workflow.
-- **`solve` job in `export-xnnpack.yml`** → `solve.py`: GPTQ for the int4 codes, once per model because the codes are
+- **`solve` job in `export-xnnpack.yml`** (on Modal) → `solve.py`: GPTQ for the int4 codes, once per model because the codes are
   per linear and the window changes only the KV cache and the masks. Calibration is `calibration.py`: committed
   prompts in the model's own chat template, each continued by the fp32 model's own greedy reply. The codes reach every
   window's export as an artifact; `export_with_codes.py` injects them into torchao's tensors before lowering and also
   carries the LFM2 state fix (`lfm2_state.py`), which the solve applies too.
-- **`export-xnnpack.yml`** / **`export-vulkan.yml`** → `export_xnnpack.py` (`backend="xnnpack"|"vulkan"`, same recipe, XNNPACK or Vulkan delegate; Vulkan gets the structural check): `hub.fetch` → `eligibility.evaluate` → `sizing.choose_context` →
+- **`export-xnnpack.yml`** / **`export-vulkan.yml`** (each window in a Modal Sandbox via `remote.py`) → `export_xnnpack.py` (`backend="xnnpack"|"vulkan"`, same recipe, XNNPACK or Vulkan delegate; Vulkan gets the structural check): `hub.fetch` → `eligibility.evaluate` → `sizing.choose_context` →
   download → `convert.py` (HF safetensors → ExecuTorch checkpoint layout) → generated `params.json` + `export_llm`
   YAML → subprocess `executorch.extension.llm.export.export_llm` → `smoke.py` (greedy generation through the wheel's
   `TextLLMRunner`, the same C++ runner the app uses) → `export-report-<window>.json` + `config.json`.

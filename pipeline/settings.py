@@ -62,6 +62,25 @@ class MtkRecipe:
 
 
 @dataclass(frozen=True)
+class ModalSettings:
+    """Where the heavy steps run when a recipe's tier is "modal" (pipeline/remote.py)."""
+
+    app: str
+    volume: str
+    # Physical cores; Modal counts 2 vCPUs to a core and allows at most 64 (measured).
+    cpu: float
+    # Requested memory is the sizing estimate times this, in whole MiB.
+    memory_margin: float
+    # Modal refuses a larger request at creation (measured 2026-10-07: 344064 MiB).
+    max_memory_mib: int
+    # A Sandbox lives at most 24 h; the GitHub job that waits on it has its own limit.
+    timeout_minutes: int
+
+
+MODAL_TIER = "modal"
+
+
+@dataclass(frozen=True)
 class Settings:
     hub_org: str
     repo_suffix: str
@@ -83,6 +102,7 @@ class Settings:
     qnn: QnnRecipe
     mtk: MtkRecipe
     executorch_version: str
+    modal: ModalSettings | None = None
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -166,4 +186,14 @@ def load() -> Settings:
             runner_tiers=runner_tiers(export["mtk"]),
         ),
         executorch_version=versions["EXECUTORCH_VERSION"],
+        modal=ModalSettings(
+            app=str(raw["modal"]["app"]),
+            volume=str(raw["modal"]["volume"]),
+            cpu=float(raw["modal"]["cpu"]),
+            memory_margin=float(raw["modal"]["memory_margin"]),
+            max_memory_mib=int(raw["modal"]["max_memory_mib"]),
+            timeout_minutes=int(raw["modal"]["timeout_minutes"]),
+        )
+        if "modal" in raw
+        else None,
     )

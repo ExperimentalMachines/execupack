@@ -1,0 +1,2 @@
+# The Modal client that pipeline/remote.py drives exports with (python -m pipeline modal-run).
+modal==1.6.1

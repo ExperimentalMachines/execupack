@@ -66,40 +66,41 @@ jobs:
       fail-fast: false
       matrix:
         entry: ${{ fromJSON(needs.targets.outputs.entries) }}
-    # Sized per window by the targets job: the export peak grows with the window squared
-    # (every attention layer holds a window x window causal mask), so Qwen3-4B needs ~33 GiB
-    # at 2k and ~108 GiB at 32k. A window no tier in vulkan.runner_tiers can carry is left
-    # out; since 2026-10-07 that tier is the 15.7 GiB Namespace profile, with no swap. The
-    # runner has no GPU, so the file gets a structural check (findings 28, 30).
-    runs-on: ${{ matrix.entry.runner }}
+    # The export runs on Modal, in a Sandbox with the memory this window needs (the targets
+    # job's memory_mib: sizing.host_need_bytes plus modal.memory_margin): the peak grows with
+    # the window squared, from ~5 GiB at 2k to ~134 GiB for Qwen3-4B at 32k. This job only
+    # sends it, waits, and publishes what comes back. Modal has no GPU either, so the file
+    # gets a structural check (findings 28, 30).
+    runs-on: namespace-profile-execupack
     timeout-minutes: 350
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       HF_HUB_DISABLE_PROGRESS_BARS: "1"
       MODEL_ID: ${{ inputs.model_id }}
       REVISION: ${{ inputs.revision }}
       CONTEXT: ${{ matrix.entry.context }}
+      MEMORY_MIB: ${{ matrix.entry.memory_mib }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: ./.github/actions/setup-export
-        with:
-          swap-gib: ${{ matrix.entry.swap_gib }}
+      - uses: ./.github/actions/setup-modal
 
-      # Exit 4 means this runner cannot build this window (memory grows with the square of
-      # the window): recorded as a skip, so the other windows' jobs stand on their own.
-      # The runner has no GPU: the file gets a structural check, the device benchmarks run it.
-      - name: Export and check
+      # Exit 4 means this window cannot be built (the export's own gate): recorded as a skip,
+      # so the other windows' jobs stand on their own.
+      - name: Export and check on Modal
         run: |
           echo "ARTIFACT=vulkan-${MODEL_ID//\//--}-${CONTEXT}" >>"$GITHUB_ENV"
           set +e
-          python -m pipeline export-vulkan "$MODEL_ID" --revision "$REVISION" --context "$CONTEXT" \
-            --out "$WORK_DIR/out" --work "$WORK_DIR/work"
+          python -m pipeline modal-run --memory-mib "$MEMORY_MIB" --requirements requirements/export-xnnpack.txt \
+            --get "$WORK_DIR/out" \
+            --script 'python -m pipeline export-vulkan "$MODEL_ID" --revision "$REVISION" --context "$CONTEXT" --out "$OUT" --work "$WORK"'
           rc=$?
           set -e
           if [ "$rc" -eq 4 ]; then
             echo "SKIPPED=1" >>"$GITHUB_ENV"
-            echo "::warning title=Window skipped::$MODEL_ID at $CONTEXT tokens cannot be exported on this runner"
+            echo "::warning title=Window skipped::$MODEL_ID at $CONTEXT tokens cannot be exported"
             exit 0
           fi
           exit "$rc"

@@ -49,8 +49,7 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     outputs:
       entries: ${{ steps.contexts.outputs.entries }}
-      contexts: ${{ steps.contexts.outputs.contexts }}
-      solve_runner: ${{ steps.contexts.outputs.solve_runner }}
+      solve_memory: ${{ steps.contexts.outputs.solve_memory }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: contexts
@@ -58,53 +57,53 @@ jobs:
           CONTEXTS: ${{ inputs.contexts }}
           MODEL_ID: ${{ inputs.model_id }}
           REVISION: ${{ inputs.revision }}
-        # One entry per window with the smallest runner that holds it (export-matrix over
-        # xnnpack.runner_tiers); the export job gates on the same sizing.host_need_bytes. A
-        # window no tier can carry is left out here, and verify follows the same list.
+        # One entry per window with the memory its Modal Sandbox asks for (export-matrix over
+        # xnnpack.runner_tiers: sizing.host_need_bytes plus modal.memory_margin). A window past
+        # what Modal allows is left out here.
         run: |
           python3 -m pip install --quiet -r requirements/dev.txt
           entries=$(python3 -m pipeline export-matrix "$MODEL_ID" --revision "$REVISION" --backend xnnpack --contexts "$CONTEXTS")
           echo "$entries"
           echo "entries=$entries" >>"$GITHUB_OUTPUT"
-          echo "contexts=$(python3 -c 'import json,sys; print(json.dumps([e["context"] for e in json.loads(sys.argv[1])]))' "$entries")" >>"$GITHUB_OUTPUT"
-          # The solve holds the fp32 model (16 GB for a 4B) and one layer's Hessians. On
-          # Blacksmith every solve up to LFM2.5-2.6B fit 23.4 GiB and past 3B took 48 GB. One
-          # Namespace profile (15.7 GiB) now runs it; the models that would not fit it have no
-          # window that fits an export either, so their solve is skipped with the empty matrix.
-          params=$(python3 -c 'import sys; from pipeline import hub; print(hub.fetch(sys.argv[1], sys.argv[2]).total_params or 0)' "$MODEL_ID" "$REVISION")
-          solve=namespace-profile-execupack
-          echo "solve runner: $solve ($params parameters)"
-          echo "solve_runner=$solve" >>"$GITHUB_OUTPUT"
+          # The solve holds the fp32 model (16 GB for a 4B) and one layer's Hessians: about 12
+          # bytes a parameter, as the Blacksmith solves measured (solve-memory).
+          solve=$(python3 -m pipeline solve-memory "$MODEL_ID" --revision "$REVISION")
+          echo "solve: $solve MiB"
+          echo "solve_memory=$solve" >>"$GITHUB_OUTPUT"
 
   solve:
     # One solve per model, not per window: the codes are per linear, and the window changes
     # the KV cache and the masks, never the weights. Every window's export reuses this
     # artifact, which is why it is worth a job of its own.
     needs: targets
-    # Nothing to solve for when no window fits a runner (an empty matrix).
+    # Nothing to solve for when no window fits (an empty matrix).
     if: ${{ inputs.gptq && needs.targets.outputs.entries != '[]' }}
-    # Sized on memory: it holds the fp32 model and one layer's Hessians (targets job).
-    runs-on: ${{ needs.targets.outputs.solve_runner }}
+    # The solve runs on Modal with the memory targets asked for; this job waits on it.
+    runs-on: namespace-profile-execupack
     timeout-minutes: 350
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       HF_HUB_DISABLE_PROGRESS_BARS: "1"
       MODEL_ID: ${{ inputs.model_id }}
       REVISION: ${{ inputs.revision }}
       QMODE: ${{ inputs.qmode }}
+      MEMORY_MIB: ${{ needs.targets.outputs.solve_memory }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: ./.github/actions/setup-export
-        with:
-          swap-gib: "24"
+      - uses: ./.github/actions/setup-modal
 
-      - name: Solve the int4 codes
+      - name: Solve the int4 codes on Modal
         run: |
+          python -m pipeline modal-run --memory-mib "$MEMORY_MIB" --requirements requirements/export-xnnpack.txt \
+            --get "$WORK_DIR" \
+            --script 'set -o pipefail
           ONLY=""
           if [ -n "$QMODE" ] && [ "$QMODE" != "8da4w" ]; then ONLY="--reference-only"; fi
           python -m pipeline solve "$MODEL_ID" --revision "$REVISION" $ONLY \
-            --out "$WORK_DIR/codes.pt" --work "$WORK_DIR/solve-work" | tee "$WORK_DIR/solve.json"
+            --out "$OUT/codes.pt" --work "$WORK/solve-work" | tee "$OUT/solve.json"'
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -118,53 +117,74 @@ jobs:
 
   export:
     needs: [targets, solve]
-    # An empty matrix is an error to GitHub, so a model no runner can carry stops at targets.
+    # An empty matrix is an error to GitHub, so a model no window fits stops at targets.
     if: ${{ always() && needs.targets.result == 'success' && needs.targets.outputs.entries != '[]' && needs.solve.result != 'failure' }}
     strategy:
       fail-fast: false
       matrix:
         entry: ${{ fromJSON(needs.targets.outputs.entries) }}
-    # Sized per window by the targets job: every attention layer holds a window x window
-    # causal mask, so the need grows with the window squared, and a window no tier in
-    # xnnpack.runner_tiers can carry is left out. Since 2026-10-07 that tier is the 15.7 GiB
-    # Namespace profile (x86, no swap). The smoke test stays in its own job (verify).
-    runs-on: ${{ matrix.entry.runner }}
+    # One Modal Sandbox per window, sized to it (memory_mib), runs the export, then the smoke
+    # test through ExecuTorch's C++ runner, then the decision gate against the fp32 model's own
+    # answers, and only then does this job publish. They used to be two jobs because the
+    # runner fails on aarch64 (finding 30) and the export ran on ARM; on Modal both are x86.
+    runs-on: namespace-profile-execupack
     timeout-minutes: 350
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       HF_HUB_DISABLE_PROGRESS_BARS: "1"
       MODEL_ID: ${{ inputs.model_id }}
       REVISION: ${{ inputs.revision }}
       QMODE: ${{ inputs.qmode }}
+      GPTQ: ${{ inputs.gptq }}
       CONTEXT: ${{ matrix.entry.context }}
+      MEMORY_MIB: ${{ matrix.entry.memory_mib }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: ./.github/actions/setup-export
-        with:
-          swap-gib: ${{ matrix.entry.swap_gib }}
+      - uses: ./.github/actions/setup-modal
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: ${{ inputs.gptq }}
         with:
           name: gptq-codes-${{ github.run_id }}
-          path: ${{ env.WORK_DIR }}
+          path: ${{ env.WORK_DIR }}/in
 
-      # Exit 4 means this runner cannot build this window (memory grows with the square of
-      # the window): recorded as a skip, so the other windows' jobs stand on their own.
-      - name: Export
+      # Exit 4 means this window cannot be built (the export's own gate): recorded as a skip,
+      # so the other windows' jobs stand on their own. The gate's rule is the one the verify
+      # job had: a solved run with no fp32 reference refuses to publish rather than falling
+      # through to an unguarded one.
+      - name: Export, smoke-test and gate on Modal
         run: |
           echo "ARTIFACT=xnnpack-${MODEL_ID//\//--}-${CONTEXT}" >>"$GITHUB_ENV"
+          puts=()
+          for f in codes.pt gate.json; do
+            if [ -f "$WORK_DIR/in/$f" ]; then puts+=(--put "$WORK_DIR/in/$f"); fi
+          done
           set +e
+          python -m pipeline modal-run --memory-mib "$MEMORY_MIB" --requirements requirements/export-xnnpack.txt \
+            "${puts[@]}" --get "$WORK_DIR/out" \
+            --script '
           CODES=""
-          if [ -f "$WORK_DIR/codes.pt" ]; then CODES="--codes $WORK_DIR/codes.pt"; fi
+          if [ -f "$IN/codes.pt" ]; then CODES="--codes $IN/codes.pt"; fi
           python -m pipeline export-xnnpack "$MODEL_ID" --revision "$REVISION" --context "$CONTEXT" \
-            --out "$WORK_DIR/out" --work "$WORK_DIR/work" $CODES --qmode "$QMODE" --skip-smoke
+            --out "$OUT" --work "$WORK/export" $CODES --qmode "$QMODE" --skip-smoke || exit $?
+          GATE=""
+          if [ -f "$IN/gate.json" ]; then
+            GATE="--gate $IN/gate.json"
+          elif [ "$GPTQ" = "true" ]; then
+            echo "::error title=No decision gate::the solve produced no fp32 reference; refusing to publish ungated"
+            exit 1
+          else
+            echo "::warning title=No decision gate::rounded run, so only the smoke test guards it"
+          fi
+          python -m pipeline verify "$OUT" --backend xnnpack --work "$WORK/verify" $GATE'
           rc=$?
           set -e
           if [ "$rc" -eq 4 ]; then
             echo "SKIPPED=1" >>"$GITHUB_ENV"
-            echo "::warning title=Window skipped::$MODEL_ID at $CONTEXT tokens cannot be exported on this runner"
+            echo "::warning title=Window skipped::$MODEL_ID at $CONTEXT tokens cannot be exported"
             exit 0
           fi
           exit "$rc"
@@ -183,90 +203,6 @@ jobs:
           path: ${{ env.WORK_DIR }}/out
           retention-days: 14
           if-no-files-found: warn
-
-
-  verify:
-    # The smoke test, and only then the publish. ExecuTorch's runner raises IndexError: stoi
-    # on aarch64 (finding 30), so this job has to be x86, as every job is now; it loads the .pte
-    # the export built and asks the same question through the same C++ runner the app uses.
-    needs: [targets, export]
-    # Not `needs.export.result == 'success'`: the export matrix is fail-fast: false so that
-    # one window standing on its own, and gating the whole verify matrix on every window
-    # having succeeded threw that away. Qwen/Qwen3-1.7B lost a 32k export to a terminated
-    # runner in run 35413952925, and the four windows that had built correctly were never
-    # verified and never published because of it. Each verify job already stands down on
-    # its own when its window uploaded no artifact, which is the per-window check this
-    # should have relied on all along.
-    if: ${{ always() && needs.targets.result == 'success' && needs.targets.outputs.entries != '[]' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        context: ${{ fromJSON(needs.targets.outputs.contexts) }}
-    runs-on: namespace-profile-execupack
-    timeout-minutes: 60
-    env:
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      HF_HUB_DISABLE_PROGRESS_BARS: "1"
-      MODEL_ID: ${{ inputs.model_id }}
-      CONTEXT: ${{ matrix.context }}
-      GPTQ: ${{ inputs.gptq }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: ./.github/actions/setup-export
-        with:
-          swap-gib: "8"
-
-      - name: Name the export's artifact
-        run: echo "ARTIFACT=xnnpack-${MODEL_ID//\//--}-${CONTEXT}" >>"$GITHUB_ENV"
-
-      # A window the export skipped (too wide for its runner) uploads nothing, so this job
-      # stands down instead of failing on a missing artifact.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        id: fetch
-        continue-on-error: true
-        with:
-          name: ${{ env.ARTIFACT }}
-          path: ${{ env.WORK_DIR }}/out
-
-      - name: Note a skipped window
-        if: steps.fetch.outcome != 'success'
-        run: |
-          echo "SKIPPED=1" >>"$GITHUB_ENV"
-          echo "::notice title=Nothing to verify::$MODEL_ID at $CONTEXT tokens was not exported"
-
-      # The fp32 model's own decisions on the gate prompts, measured in the solve job while
-      # it was loaded. Without them the gate cannot run and says so; it never passes quietly.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: ${{ inputs.gptq && env.SKIPPED != '1' }}
-        continue-on-error: true
-        with:
-          name: gptq-codes-${{ github.run_id }}
-          path: ${{ env.WORK_DIR }}/gate
-
-      - name: Smoke-test the exported file, then gate it on the fp32 model's decisions
-        if: env.SKIPPED != '1'
-        run: |
-          GATE=""
-          if [ -f "$WORK_DIR/gate/gate.json" ]; then
-            GATE="--gate $WORK_DIR/gate/gate.json"
-          elif [ "$GPTQ" = "true" ]; then
-            # A solved run whose reference went missing must not fall through to an
-            # unguarded publish: that is the exact silence this gate exists to end.
-            echo "::error title=No decision gate::the solve produced no fp32 reference; refusing to publish ungated"
-            exit 1
-          else
-            echo "::warning title=No decision gate::rounded run, so only the smoke test guards it"
-          fi
-          python -m pipeline verify "$WORK_DIR/out" --backend xnnpack --work "$WORK_DIR/verify-work" $GATE
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: env.SKIPPED != '1'
-        with:
-          name: verified-${{ env.ARTIFACT }}
-          path: ${{ env.WORK_DIR }}/out
-          retention-days: 14
-          if-no-files-found: error
 
       - name: Publish to Hugging Face
         if: inputs.publish_hf && env.SKIPPED != '1'
