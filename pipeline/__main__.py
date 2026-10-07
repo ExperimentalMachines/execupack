@@ -155,7 +155,11 @@ def _mtk_matrix(args) -> int:
 
     entries = []
     for window in sorted({int(v) for v in wanted}, reverse=True):
-        recipe = dataclasses.replace(cfg.mtk, cache_size=window)
+        # The export's own prompt_tokens (MTK_PROMPT_TOKENS): the prompt graph's attention
+        # scores grow with it, so sizing at the default would under-ask for a larger batch.
+        recipe = dataclasses.replace(
+            cfg.mtk, cache_size=window, prompt_tokens=args.prompt_tokens or cfg.mtk.prompt_tokens
+        )
         tier = export_mtk.pick_runner(source.config, recipe, args.prompts, source.total_params, streaming=streaming)
         if tier is None:
             # Left out rather than failed: the other windows are independent and a matrix
@@ -175,7 +179,11 @@ def _mtk_matrix(args) -> int:
             if entry["memory_mib"] is None:
                 print(f"{window} needs more than Modal allows ({need:,} B)", file=sys.stderr)
                 continue
-            entry["cpu"], entry["timeout_minutes"] = export_mtk.modal_shape(window)
+            shape = export_mtk.modal_shape(window)
+            if shape is None:
+                print(f"no Modal shape for a {window}-token window (export_mtk.MODAL_SHAPES)", file=sys.stderr)
+                continue
+            entry["cpu"], entry["timeout_minutes"] = shape
             print(f"{window}: needs {need / 2**30:.1f} GiB, {entry}", file=sys.stderr)
         entries.append(entry)
     print(json.dumps(entries))
@@ -506,6 +514,7 @@ def main(argv: list[str] | None = None) -> int:
         help="lines in mtk.calibration, which sets the disk the Arrow cache needs; the export "
         "counts the real file and its disk gate catches a mismatch",
     )
+    matrix.add_argument("--prompt-tokens", type=int, default=None, help="the export's prompt_tokens, if not mtk's")
     matrix.set_defaults(func=_mtk_matrix)
 
     qnn_matrix = commands.add_parser("qnn-matrix", help="windows and the Modal Sandbox each gets, as a CI matrix")

@@ -107,6 +107,10 @@ def test_a_mediatek_window_gets_more_cores_and_time_as_it_grows(window, cores, m
     assert cores <= 64
 
 
+def test_a_window_past_every_shape_is_left_out_not_fatal():
+    assert export_mtk.modal_shape(65536) is None
+
+
 def test_the_qualcomm_workflow_sends_each_window_with_its_memory_cores_and_minutes():
     text = (settings.ROOT / ".github/workflows/export-qnn.yml").read_text(encoding="utf-8")
     assert '--memory-mib "$MEMORY_MIB" --cpu "$CORES" --timeout-minutes "$SANDBOX_MINUTES"' in text

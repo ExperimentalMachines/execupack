@@ -305,12 +305,12 @@ def pick_runner(
     return None
 
 
-def modal_shape(window: int) -> tuple[int, int]:
-    """Physical cores and Sandbox minutes for a window on Modal (MODAL_SHAPES)."""
+def modal_shape(window: int) -> tuple[int, int] | None:
+    """Physical cores and Sandbox minutes for a window on Modal (MODAL_SHAPES), or None past them."""
     for largest, cores, minutes in MODAL_SHAPES:
         if window <= largest:
             return cores, minutes
-    raise ValueError(f"no Modal shape for a {window}-token window")
+    return None
 
 
 def exp_name(weight_dir: Path, precision: str, chunks: int) -> str:

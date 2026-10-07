@@ -4,7 +4,7 @@ import dataclasses
 import pytest
 from conftest import hf_config, load_json
 
-from pipeline import families
+from pipeline import families, hub
 
 
 def plan_for(config):
@@ -186,7 +186,6 @@ def test_the_first_lfm2_checkpoints_are_read_like_lfm25():
     # block_ff_dim; hub.normalize_config spells them as LFM2.5 does. Checked against the
     # weights (safetensors headers, 2026-10-07): q_proj only in layers 2, 5, 8, 10, 12, 14, and
     # feed-forward widths 4,608 (350M) and 8,192 (1.2B).
-    from pipeline import hub
 
     for name, width in (("lfm2-350m", 4608), ("lfm2-1.2b", 8192)):
         raw = load_json(f"{name}.config.json")
@@ -203,9 +202,18 @@ def test_the_first_lfm2_checkpoints_are_read_like_lfm25():
 
 
 def test_a_config_with_the_newer_keys_is_left_alone():
-    from pipeline import hub
 
     config = load_json("lfm2.5-350m.config.json")
     assert hub.normalize_config(config) == config
     qwen = {"model_type": "qwen3", "num_hidden_layers": 28}
     assert hub.normalize_config(qwen) is qwen
+
+
+def test_one_attention_layer_per_chunk_is_only_for_hybrids():
+    lfm2 = hub.normalize_config(load_json("lfm2-1.2b.config.json"))
+    assert families.mtk_chunks_one_attention_each(lfm2) == 8
+    qwen = dict(hf_config("Qwen/Qwen3-0.6B"))
+    assert families.mtk_chunks_one_attention_each(qwen) is None
+    # An explicit all-attention layout is still not a hybrid: no chunk per layer for it.
+    qwen["layer_types"] = ["full_attention"] * int(qwen["num_hidden_layers"])
+    assert families.mtk_chunks_one_attention_each(qwen) is None

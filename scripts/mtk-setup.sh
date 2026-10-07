@@ -29,7 +29,7 @@ tar xzf "$sdk.tar.gz" -C "$sdk" --strip-components=1 --wildcards \
 neuron_whl=$(find "$sdk" -name "mtk_neuron-${MTK_NEURON_VERSION}-*.whl" | head -1)
 converter_whl=$(find "$sdk" -name "mtk_converter-${MTK_CONVERTER_VERSION}+public-cp310-*.whl" | head -1)
 test -n "$neuron_whl" && test -n "$converter_whl"
-uv pip install --quiet --python "$tool_python" -r requirements/mtk-tools.txt "$neuron_whl" "$converter_whl"
+uv pip install --quiet --no-cache --python "$tool_python" -r requirements/mtk-tools.txt "$neuron_whl" "$converter_whl"
 rm -rf "$sdk" "$sdk.tar.gz"
 uv pip list --python "$tool_python" | grep -iE '^(torch|torchao|executorch|transformers|mtk.converter|mtk.neuron) '
 

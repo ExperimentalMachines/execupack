@@ -75,12 +75,14 @@ jobs:
           CONTEXTS: ${{ inputs.contexts }}
           MODEL_ID: ${{ inputs.model_id }}
           REVISION: ${{ inputs.revision }}
+          PROMPT_TOKENS: ${{ inputs.prompt_tokens }}
         # One entry per window, each carrying the Modal Sandbox that can build it: memory from
         # pipeline.export_mtk.calibration_bytes (the same estimate the export gates on),
         # cores and minutes from export_mtk.MODAL_SHAPES, and the chunk count for a hybrid at
         # 16k and up.
         run: |
-          entries=$(python3 -m pipeline mtk-matrix "$MODEL_ID" --revision "$REVISION" --contexts "$CONTEXTS")
+          entries=$(python3 -m pipeline mtk-matrix "$MODEL_ID" --revision "$REVISION" --contexts "$CONTEXTS" \
+            ${PROMPT_TOKENS:+--prompt-tokens "$PROMPT_TOKENS"})
           echo "$entries"
           echo "entries=$entries" >>"$GITHUB_OUTPUT"
 

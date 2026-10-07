@@ -161,9 +161,10 @@ def mtk_chunks_one_attention_each(config: dict) -> int | None:
     """
     c = text_config(config)
     layer_types = c.get("layer_types")
-    if not layer_types or attending_layers(c) is None:
+    attending = attending_layers(c)
+    n_layers = len(layer_types or ())
+    if attending is None or attending >= n_layers:
         return None
-    n_layers = len(layer_types)
     for chunks in range(1, n_layers + 1):
         if n_layers % chunks:
             continue
