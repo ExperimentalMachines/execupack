@@ -1,0 +1,23 @@
+name: Set up a light job
+description: >-
+  Python from config/versions.env and the pipeline's plain requirements, for jobs that only read
+  Hub metadata and do arithmetic (the targets jobs). The Namespace runner's system Python
+  refuses pip installs (PEP 668: externally-managed-environment), so these jobs need their own.
+
+runs:
+  using: composite
+  steps:
+    - name: Read versions
+      id: versions
+      shell: bash
+      run: grep -E '^[A-Z_]+=' config/versions.env >>"$GITHUB_OUTPUT"
+
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: ${{ steps.versions.outputs.PYTHON_VERSION }}
+        cache: pip
+        cache-dependency-path: requirements/dev.txt
+
+    - name: Install
+      shell: bash
+      run: python -m pip install --quiet -r requirements/dev.txt

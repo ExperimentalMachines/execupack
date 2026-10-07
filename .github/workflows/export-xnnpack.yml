@@ -52,6 +52,7 @@ jobs:
       solve_memory: ${{ steps.contexts.outputs.solve_memory }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-light
       - id: contexts
         env:
           CONTEXTS: ${{ inputs.contexts }}
@@ -61,7 +62,6 @@ jobs:
         # xnnpack.runner_tiers: sizing.host_need_bytes plus modal.memory_margin). A window past
         # what Modal allows is left out here.
         run: |
-          python3 -m pip install --quiet -r requirements/dev.txt
           entries=$(python3 -m pipeline export-matrix "$MODEL_ID" --revision "$REVISION" --backend xnnpack --contexts "$CONTEXTS")
           echo "$entries"
           echo "entries=$entries" >>"$GITHUB_OUTPUT"
