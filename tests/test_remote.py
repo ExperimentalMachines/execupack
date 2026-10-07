@@ -11,7 +11,7 @@ import subprocess
 import pytest
 from conftest import TOTAL_PARAMS, hf_config
 
-from pipeline import export_xnnpack, families, remote, settings, sizing
+from pipeline import export_mtk, export_qnn, export_xnnpack, families, remote, settings, sizing
 
 CFG = settings.load()
 WINDOWS = (2048, 4096, 8192, 16384, 32768)
@@ -80,6 +80,66 @@ def test_the_workflow_sends_each_window_to_modal_with_its_own_memory(workflow):
     assert "./.github/actions/setup-export" not in text
 
 
+def test_the_mediatek_workflow_sends_each_window_with_its_memory_cores_and_minutes():
+    text = (settings.ROOT / ".github/workflows/export-mtk.yml").read_text(encoding="utf-8")
+    assert '--memory-mib "$MEMORY_MIB" --cpu "$CORES" --timeout-minutes "$SANDBOX_MINUTES"' in text
+    assert "--mtk-tools requirements/mtk-tools.txt" in text
+    assert "bash scripts/mtk-setup.sh &&" in text
+    assert "./.github/actions/setup-export" not in text
+    # The job outlives the longest Sandbox, so the Sandbox is what times out and says so.
+    longest = max(minutes for _, _, minutes in export_mtk.MODAL_SHAPES)
+    assert f"timeout-minutes: {longest + 30}" in text
+
+
+def test_the_neuropilot_sdk_is_fetched_at_run_time_and_never_put_in_the_image():
+    setup = (settings.ROOT / "scripts/mtk-setup.sh").read_text(encoding="utf-8")
+    assert "sha256sum -c -" in setup and 'rm -rf "$sdk" "$sdk.tar.gz"' in setup
+    image = (settings.ROOT / "pipeline/remote.py").read_text(encoding="utf-8").split("def image(")[1]
+    assert "NEUROPILOT_SDK_URL" not in image.split("def _stream(")[0]
+
+
+@pytest.mark.parametrize(
+    ("window", "cores", "minutes"),
+    [(2048, 8, 240), (4096, 8, 240), (8192, 16, 330), (16384, 16, 330), (32768, 32, 600)],
+)
+def test_a_mediatek_window_gets_more_cores_and_time_as_it_grows(window, cores, minutes):
+    assert export_mtk.modal_shape(window) == (cores, minutes)
+    assert cores <= 64
+
+
+def test_a_window_past_every_shape_is_left_out_not_fatal():
+    assert export_mtk.modal_shape(65536) is None
+
+
+def test_the_qualcomm_workflow_sends_each_window_with_its_memory_cores_and_minutes():
+    text = (settings.ROOT / ".github/workflows/export-qnn.yml").read_text(encoding="utf-8")
+    assert '--memory-mib "$MEMORY_MIB" --cpu "$CORES" --timeout-minutes "$SANDBOX_MINUTES"' in text
+    assert "--requirements requirements/export-qnn.txt" in text
+    # QAIRT is downloaded inside each Sandbox now; no Actions cache keeps a copy.
+    assert "actions/cache" not in text
+    longest = max(minutes for _, _, minutes in export_qnn.QNN_MODAL_SHAPES)
+    assert f"timeout-minutes: {longest + 30}" in text
+
+
+@pytest.mark.parametrize(
+    ("model_id", "cores"),
+    [
+        ("HuggingFaceTB/SmolLM2-360M-Instruct", 16),
+        ("Qwen/Qwen3-0.6B", 16),
+        ("meta-llama/Llama-3.2-1B-Instruct", 16),
+        ("Qwen/Qwen3-1.7B", 32),
+        ("Qwen/Qwen3-4B", 32),
+    ],
+)
+def test_a_qualcomm_export_fits_a_sandbox_at_every_window_it_is_given(model_id, cores):
+    for window in (2048, 4096, 8192):
+        need, got_cores, minutes = export_qnn.modal_request(TOTAL_PARAMS[model_id], window)
+        # Qwen3-0.6B measured 15.6 GB of RSS at 2k and 4k (findings 8 and 10): asked for above that.
+        assert need >= 15_702_085_632
+        assert remote.memory_request(need, CFG.modal) is not None
+        assert got_cores == cores and minutes < 1440  # Modal's Sandbox limit is 24 hours
+
+
 def test_the_matrix_entry_shape_the_workflow_reads():
     entry = {"context": 2048, "runner": "modal", "swap_gib": 0, "memory_mib": 6286}
     assert json.loads(json.dumps(entry))["memory_mib"] == 6286
@@ -107,3 +167,20 @@ def test_a_failed_sync_fails_a_step_that_had_succeeded(tmp_path):
     # A step that already failed keeps its own status.
     skipped = remote.wrap("exit 4").replace(f"sync {remote.VOLUME_MOUNT}", "false")
     assert subprocess.run(["bash", "-c", skipped], env=env, capture_output=True).returncode == 4
+
+
+def test_the_run_that_built_a_file_reaches_the_sandbox():
+    assert {"GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"} <= set(remote.PASSTHROUGH)
+
+
+def test_the_container_peak_is_read_from_its_cgroup(tmp_path):
+    from pipeline.exporting import MemorySampler
+
+    current = tmp_path / "memory.current"
+    current.write_text("3221225472\n")
+    sampler = MemorySampler(meminfo=tmp_path / "missing", cgroup=(tmp_path / "absent", current))
+    sampler.sample()
+    current.write_text("1073741824\n")
+    sampler.sample()
+    assert sampler.result()["peak_cgroup_bytes"] == 3221225472
+    assert MemorySampler(meminfo=tmp_path / "missing", cgroup=()).result()["peak_cgroup_bytes"] is None

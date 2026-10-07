@@ -38,11 +38,14 @@ concurrency:
 
 jobs:
   targets:
-    # Hub metadata only, no model download.
+    # Hub metadata only, no model download: a parameter count and arithmetic.
     runs-on: namespace-profile-execupack
+    env:
+      # Llama 3.2 is gated, so even its metadata needs the token.
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
     outputs:
       socs: ${{ steps.socs.outputs.socs }}
-      contexts: ${{ steps.contexts.outputs.contexts }}
+      entries: ${{ steps.contexts.outputs.entries }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-light
@@ -57,96 +60,70 @@ jobs:
       - id: contexts
         env:
           CONTEXTS: ${{ inputs.contexts }}
-        # Accepts a JSON list, one number, or a comma-separated list; empty means every tier.
+          MODEL_ID: ${{ inputs.model_id }}
+          REVISION: ${{ inputs.revision }}
+        # One entry per window with the Modal Sandbox it gets: memory, cores and minutes from
+        # pipeline.export_qnn.modal_request. Accepts a JSON list, one number, or a
+        # comma-separated list; empty means every tier.
         run: |
-          CONTEXTS=$(python3 - "$CONTEXTS" <<'PY'
-          import json, sys, yaml
-          raw = sys.argv[1].strip()
-          if not raw:
-              values = yaml.safe_load(open("config/pipeline.yaml"))["export"]["context_tiers"]
-          else:
-              try:
-                  values = json.loads(raw)
-              except ValueError:
-                  values = [v for v in raw.strip("[]").split(",") if v.strip()]
-              if not isinstance(values, list):
-                  values = [values]
-          print(json.dumps(sorted({int(v) for v in values}, reverse=True)))
-          PY
-          )
-          echo "contexts=$CONTEXTS" >>"$GITHUB_OUTPUT"
+          entries=$(python3 -m pipeline qnn-matrix "$MODEL_ID" --revision "$REVISION" --contexts "$CONTEXTS")
+          echo "$entries"
+          echo "entries=$entries" >>"$GITHUB_OUTPUT"
 
   export:
     needs: targets
+    # An empty matrix is an error to GitHub.
+    if: ${{ needs.targets.outputs.entries != '[]' }}
     strategy:
       fail-fast: false
       matrix:
         soc: ${{ fromJSON(needs.targets.outputs.socs) }}
-        context: ${{ fromJSON(needs.targets.outputs.contexts) }}
-    # Stays on x86: the Qualcomm backend ships only in the executorch Linux x86_64
-    # wheel, and the QAIRT SDK it downloads is x86_64 (this workflow checks for
-    # libQnnHtp.so under an x86_64 path).
+        entry: ${{ fromJSON(needs.targets.outputs.entries) }}
+    # The export runs on Modal, in a Sandbox the targets job sized to this model and window;
+    # this job only sends it, waits, and publishes what comes back. Modal's hosts are x86,
+    # which the Qualcomm backend needs: it ships only in the executorch Linux x86_64 wheel,
+    # and the QAIRT SDK is x86_64. The wheel downloads QAIRT inside the Sandbox on first
+    # import (export_qnn.qnn_sdk), so the SDK is fetched from Qualcomm on every run and never
+    # stored in an image, a cache or the Volume.
     runs-on: namespace-profile-execupack
-    timeout-minutes: 350
+    # Past the longest Sandbox (export_qnn.QNN_MODAL_SHAPES), so the Sandbox times out first.
+    timeout-minutes: 1410
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       HF_HUB_DISABLE_PROGRESS_BARS: "1"
       MODEL_ID: ${{ inputs.model_id }}
       REVISION: ${{ inputs.revision }}
       SOC: ${{ matrix.soc }}
-      CONTEXT: ${{ matrix.context }}
+      CONTEXT: ${{ matrix.entry.context }}
+      MEMORY_MIB: ${{ matrix.entry.memory_mib }}
+      CORES: ${{ matrix.entry.cpu }}
+      SANDBOX_MINUTES: ${{ matrix.entry.timeout_minutes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: ./.github/actions/setup-export
-        with:
-          swap-gib: "24"
-          requirements: requirements/export-qnn.txt
+      - uses: ./.github/actions/setup-modal
 
       - name: Name things
         run: |
-          grep -E '^QAIRT_VERSION=' config/versions.env >>"$GITHUB_ENV"
           soc_lower=$(echo "$SOC" | tr '[:upper:]' '[:lower:]')
           echo "TARGET=$soc_lower" >>"$GITHUB_ENV"
           echo "ARTIFACT=qnn-${soc_lower}-${MODEL_ID//\//--}-${CONTEXT}" >>"$GITHUB_ENV"
 
-      # The executorch wheel downloads the QAIRT SDK and a libc++ into ~/.cache/executorch/qnn
-      # on first import. Cached per version in this repository only; never re-hosted. Restore
-      # and save are separate steps so the cache is kept even when the export fails.
-      - name: Restore QAIRT
-        id: qairt
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/executorch/qnn
-          key: qairt-${{ env.QAIRT_VERSION }}-${{ runner.os }}-${{ runner.arch }}
-
-      - name: Install QAIRT
-        run: |
-          python -c "import executorch.backends.qualcomm" 2>&1 | grep -v "Downloading\|Extracting" || true
-          find ~/.cache/executorch/qnn/sdk-"$QAIRT_VERSION" -name libQnnHtp.so -path '*x86_64*' | grep -q .
-          # The archives are only needed until extraction; keep them out of the cache.
-          find ~/.cache/executorch/qnn \( -name '*.zip' -o -name '*.tar.xz' \) -delete
-          du -sh ~/.cache/executorch/qnn
-
-      - name: Save QAIRT
-        if: steps.qairt.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/executorch/qnn
-          key: qairt-${{ env.QAIRT_VERSION }}-${{ runner.os }}-${{ runner.arch }}
-
-      # Exit 4 means this runner cannot build this window: recorded as a skip, so the other
-      # jobs of the matrix stand on their own.
-      - name: Export
+      # Exit 4 means this window cannot be built: recorded as a skip, so the other jobs of the
+      # matrix stand on their own.
+      - name: Export on Modal
         run: |
           set +e
-          python -m pipeline export-qnn "$MODEL_ID" --soc "$SOC" --revision "$REVISION" \
-            --out "$WORK_DIR/out" --work "$WORK_DIR/work" --context "$CONTEXT"
+          python -m pipeline modal-run --memory-mib "$MEMORY_MIB" --cpu "$CORES" --timeout-minutes "$SANDBOX_MINUTES" \
+            --requirements requirements/export-qnn.txt --get "$WORK_DIR/out" \
+            --script 'python -m pipeline export-qnn "$MODEL_ID" --soc "$SOC" --revision "$REVISION" --out "$OUT" --work "$WORK/export" --context "$CONTEXT"'
           rc=$?
           set -e
           if [ "$rc" -eq 4 ]; then
             echo "SKIPPED=1" >>"$GITHUB_ENV"
-            echo "::warning title=Window skipped::$MODEL_ID at $CONTEXT tokens on $SOC cannot be exported on this runner"
+            echo "::warning title=Window skipped::$MODEL_ID at $CONTEXT tokens on $SOC cannot be exported"
             exit 0
           fi
           exit "$rc"

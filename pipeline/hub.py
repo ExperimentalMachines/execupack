@@ -62,6 +62,32 @@ def _json_file(hf, repo_id: str, revision: str, filename: str, files: list[str])
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def normalize_config(config: dict) -> dict:
+    """The config with the older LFM2 keys spelled the way LFM2.5's are.
+
+    LiquidAI's first LFM2 checkpoints (LFM2-350M, -700M, -1.2B) name their attention layers
+    `full_attn_idxs` and their feed-forward width `block_ff_dim`, where LFM2.5 writes
+    `layer_types` and `intermediate_size`; transformers' Lfm2Config accepts both. The pipeline
+    and the patched MediaTek script read the newer keys, so the older ones are translated here:
+    every layer is a convolution except the ones `full_attn_idxs` lists, and intermediate_size
+    takes block_ff_dim's unadjusted value, which families.lfm2_hidden_dim and the MediaTek
+    script both put through block_auto_adjust_ff_dim's rule as they do for LFM2.5. A config
+    that already has the newer keys is returned as it is.
+    """
+    if config.get("model_type") != "lfm2":
+        return config
+    config = dict(config)
+    idxs = config.get("full_attn_idxs")
+    if not config.get("layer_types") and idxs is not None and config.get("num_hidden_layers"):
+        attending = set(int(i) for i in idxs)
+        config["layer_types"] = [
+            "full_attention" if i in attending else "conv" for i in range(int(config["num_hidden_layers"]))
+        ]
+    if config.get("intermediate_size") is None and config.get("block_ff_dim") is not None:
+        config["intermediate_size"] = int(config["block_ff_dim"])
+    return config
+
+
 def fetch(repo_id: str, revision: str = "main", token: str | None = None) -> SourceModel:
     hf = api(token)
     info = hf.model_info(
@@ -87,7 +113,7 @@ def fetch(repo_id: str, revision: str = "main", token: str | None = None) -> Sou
         files=files,
     )
     try:
-        source.config = _json_file(hf, repo_id, sha, "config.json", files)
+        source.config = normalize_config(_json_file(hf, repo_id, sha, "config.json", files))
         source.generation_config = _json_file(hf, repo_id, sha, "generation_config.json", files)
         source.tokenizer_config = _json_file(hf, repo_id, sha, "tokenizer_config.json", files)
     except GatedRepoError:

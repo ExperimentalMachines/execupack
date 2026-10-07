@@ -131,7 +131,7 @@ def _mtk_matrix(args) -> int:
     """
     import dataclasses
 
-    from pipeline import export_mtk, families, hub, settings
+    from pipeline import export_mtk, families, hub, remote, settings
 
     cfg = settings.load()
     source = hub.fetch(args.model, args.revision)
@@ -155,14 +155,71 @@ def _mtk_matrix(args) -> int:
 
     entries = []
     for window in sorted({int(v) for v in wanted}, reverse=True):
-        recipe = dataclasses.replace(cfg.mtk, cache_size=window)
+        # The export's own prompt_tokens (MTK_PROMPT_TOKENS): the prompt graph's attention
+        # scores grow with it, so sizing at the default would under-ask for a larger batch.
+        recipe = dataclasses.replace(
+            cfg.mtk, cache_size=window, prompt_tokens=args.prompt_tokens or cfg.mtk.prompt_tokens
+        )
         tier = export_mtk.pick_runner(source.config, recipe, args.prompts, source.total_params, streaming=streaming)
         if tier is None:
             # Left out rather than failed: the other windows are independent and a matrix
             # that refuses to start teaches less than nine jobs that finish.
             print(f"no runner tier can build a {window}-token window", file=sys.stderr)
             continue
-        entries.append({"context": window, "runner": tier.label, "swap_gib": tier.swap_gib})
+        entry = {"context": window, "runner": tier.label, "swap_gib": tier.swap_gib, "max_chunks": ""}
+        if window >= export_mtk.ONE_ATTENTION_PER_CHUNK_FROM:
+            chunks = families.mtk_chunks_one_attention_each(source.config)
+            if chunks is not None and chunks > cfg.mtk.max_chunks:
+                entry["max_chunks"] = str(chunks)
+        if tier.label == settings.MODAL_TIER:
+            need = export_mtk.calibration_bytes(
+                source.config, recipe, args.prompts, source.total_params, streaming=streaming
+            )
+            entry["memory_mib"] = remote.memory_request(max(need, export_mtk.MODAL_FLOOR_BYTES), cfg.modal)
+            if entry["memory_mib"] is None:
+                print(f"{window} needs more than Modal allows ({need:,} B)", file=sys.stderr)
+                continue
+            shape = export_mtk.modal_shape(window)
+            if shape is None:
+                print(f"no Modal shape for a {window}-token window (export_mtk.MODAL_SHAPES)", file=sys.stderr)
+                continue
+            entry["cpu"], entry["timeout_minutes"] = shape
+            print(f"{window}: needs {need / 2**30:.1f} GiB, {entry}", file=sys.stderr)
+        entries.append(entry)
+    print(json.dumps(entries))
+    return 0
+
+
+def _qnn_matrix(args) -> int:
+    """One matrix entry per window for the Qualcomm export, with the Modal Sandbox it gets
+    (export_qnn.modal_request), from Hub metadata alone."""
+    from pipeline import export_qnn, hub, remote, settings
+
+    cfg = settings.load()
+    source = hub.fetch(args.model, args.revision)
+    if not source.total_params:
+        print(f"no parameter count for {args.model}", file=sys.stderr)
+        return 2
+    if args.contexts:
+        try:
+            wanted = json.loads(args.contexts)
+        except ValueError:
+            wanted = [v for v in args.contexts.strip("[]").split(",") if v.strip()]
+        if not isinstance(wanted, list):
+            wanted = [wanted]
+    else:
+        wanted = list(cfg.context_tiers)
+
+    entries = []
+    for window in sorted({int(v) for v in wanted}, reverse=True):
+        need, cores, minutes = export_qnn.modal_request(source.total_params, window)
+        memory_mib = remote.memory_request(need, cfg.modal)
+        if memory_mib is None:
+            print(f"{window} needs more than Modal allows ({need:,} B)", file=sys.stderr)
+            continue
+        entry = {"context": window, "memory_mib": memory_mib, "cpu": cores, "timeout_minutes": minutes}
+        print(f"{window}: {entry}", file=sys.stderr)
+        entries.append(entry)
     print(json.dumps(entries))
     return 0
 
@@ -457,7 +514,14 @@ def main(argv: list[str] | None = None) -> int:
         help="lines in mtk.calibration, which sets the disk the Arrow cache needs; the export "
         "counts the real file and its disk gate catches a mismatch",
     )
+    matrix.add_argument("--prompt-tokens", type=int, default=None, help="the export's prompt_tokens, if not mtk's")
     matrix.set_defaults(func=_mtk_matrix)
+
+    qnn_matrix = commands.add_parser("qnn-matrix", help="windows and the Modal Sandbox each gets, as a CI matrix")
+    qnn_matrix.add_argument("model")
+    qnn_matrix.add_argument("--revision", default="main")
+    qnn_matrix.add_argument("--contexts", default="", help="JSON or comma-separated windows; empty for every tier")
+    qnn_matrix.set_defaults(func=_qnn_matrix)
 
     export_matrix = commands.add_parser(
         "export-matrix", help="windows and the runner each needs for an export_llm backend, as a CI matrix"
@@ -484,6 +548,8 @@ def main(argv: list[str] | None = None) -> int:
     modal_run.add_argument("--get", help="local directory that receives $OUT")
     modal_run.add_argument("--env", action="append", help="NAME=VALUE set in the Sandbox (repeatable)")
     modal_run.add_argument("--keep", action="store_true", help="leave the run's files on the Volume")
+    modal_run.add_argument("--timeout-minutes", type=int, default=None, help="default modal.timeout_minutes")
+    modal_run.add_argument("--mtk-tools", help="requirements for MediaTek's Python 3.10 virtualenv in the image")
     modal_run.set_defaults(func=_modal_run)
 
     watch = commands.add_parser("watch", help="check the watched orgs, dispatch exports, update state")

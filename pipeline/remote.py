@@ -46,7 +46,24 @@ REMOTE_ROOT = "/root/execupack"
 VOLUME_MOUNT = "/vol"
 CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 # Passed into the Sandbox when set here, besides --env.
-PASSTHROUGH = ("HF_HUB_DISABLE_PROGRESS_BARS", "MODEL_ID", "REVISION", "CONTEXT", "QMODE", "GPTQ")
+PASSTHROUGH = (
+    "HF_HUB_DISABLE_PROGRESS_BARS",
+    "MODEL_ID",
+    "REVISION",
+    "CONTEXT",
+    "QMODE",
+    "GPTQ",
+    "SOC",
+    "MTK_MAX_CHUNKS",
+    "MTK_PRECISION",
+    "MTK_PROMPT_TOKENS",
+    # manifest.run_info: each export report links the GitHub run that built it.
+    "GITHUB_SERVER_URL",
+    "GITHUB_REPOSITORY",
+    "GITHUB_RUN_ID",
+)
+# MediaTek's tools in the image (scripts/mtk-setup.sh adds the NeuroPilot wheels at run time).
+MTK_VENV = "/opt/mtk-venv"
 
 
 def python_version() -> str:
@@ -68,14 +85,36 @@ def memory_request(need_bytes: int, cfg: settings.ModalSettings) -> int | None:
     return mib if mib <= cfg.max_memory_mib else None
 
 
-def image(requirements: Path):
+def image(requirements: Path, mtk_tools: Path | None = None):
+    """The step's image; with `mtk_tools`, also MediaTek's Python 3.10 virtualenv at MTK_VENV.
+
+    The virtualenv holds the public half of requirements/mtk-tools.txt (torch from the CPU
+    index, executorch, transformers...), which Modal caches like any layer. The NeuroPilot
+    wheels are not in it: they come from MediaTek's SDK archive, downloaded and deleted on
+    every run by scripts/mtk-setup.sh, so nothing of the SDK is ever stored in an image.
+    """
     import modal
 
-    img = modal.Image.debian_slim(python_version=python_version()).apt_install("git", "build-essential")
+    img = modal.Image.debian_slim(python_version=python_version()).apt_install("git", "build-essential", "curl")
     pins = cpu_pins(requirements)
     if pins:
         img = img.pip_install(*pins, index_url=CPU_INDEX)
     img = img.pip_install_from_requirements(str(requirements))
+    if mtk_tools is not None:
+        mtk_python = settings.read_env_file(settings.CONFIG_DIR / "versions.env")["MTK_PYTHON_VERSION"]
+        tool_python = f"{MTK_VENV}/bin/python"
+        img = (
+            img.pip_install("uv")
+            .add_local_file(str(mtk_tools), "/tmp/mtk-tools.txt", copy=True)
+            .run_commands(
+                f"uv venv --python {mtk_python} {MTK_VENV}",
+                *[
+                    f"uv pip install --python {tool_python} '{pin}' --index-url {CPU_INDEX}"
+                    for pin in cpu_pins(mtk_tools)
+                ],
+                f"uv pip install --python {tool_python} -r /tmp/mtk-tools.txt",
+            )
+        )
     for name in REPO_DIRS:
         img = img.add_local_dir(str(ROOT / name), f"{REMOTE_ROOT}/{name}", ignore=["**/__pycache__/**"])
     return img
@@ -114,6 +153,8 @@ def run(
     env: dict[str, str],
     cpu: float | None = None,
     keep: bool = False,
+    timeout_minutes: int | None = None,
+    mtk_tools: Path | None = None,
 ) -> int:
     import modal
 
@@ -136,6 +177,7 @@ def run(
     sandbox_env.update(env)
     sandbox_env.update(IN=f"{base}/in", OUT=f"{base}/out", WORK="/work", HF_HOME="/work/hf-home", PYTHONUNBUFFERED="1")
     cores = cpu or cfg.cpu
+    timeout = timeout_minutes or cfg.timeout_minutes
 
     sandbox = None
     code = None
@@ -149,7 +191,7 @@ def run(
                         batch.put_file(str(path), f"/{key}/in/{path.name}")
             print(f"uploaded {len(puts)} input(s) to {cfg.volume}:/{key}/in", flush=True)
 
-        print(f"Modal Sandbox: {memory_mib} MiB, {cores:g} cores, timeout {cfg.timeout_minutes} min", flush=True)
+        print(f"Modal Sandbox: {memory_mib} MiB, {cores:g} cores, timeout {timeout} min", flush=True)
         started = time.time()
         with modal.enable_output():
             sandbox = modal.Sandbox.create(
@@ -157,10 +199,10 @@ def run(
                 "-c",
                 wrap(script),
                 app=app,
-                image=image(requirements),
+                image=image(requirements, mtk_tools),
                 memory=memory_mib,
                 cpu=cores,
-                timeout=cfg.timeout_minutes * 60,
+                timeout=timeout * 60,
                 volumes={VOLUME_MOUNT: volume},
                 secrets=secrets,
                 env=sandbox_env,
@@ -177,7 +219,7 @@ def run(
             sandbox.wait(raise_on_termination=False)
             code = sandbox.returncode
         except modal.exception.SandboxTimeoutError:
-            print(f"::error::the Modal Sandbox ran past its {cfg.timeout_minutes}-minute timeout", flush=True)
+            print(f"::error::the Modal Sandbox ran past its {timeout}-minute timeout", flush=True)
         for reader in readers:
             reader.join(timeout=30)
         print(f"Modal Sandbox exited {code} after {(time.time() - started) / 60:.1f} min", flush=True)
@@ -219,6 +261,8 @@ def wrap(script: str) -> str:
         "}\n"
         "trap finish EXIT\n"
         'mkdir -p "$IN" "$OUT" "$WORK"\n'
+        # nproc is the cores asked for; left to itself, OpenMP may size its pool to the host.
+        'export OMP_NUM_THREADS="${OMP_NUM_THREADS:-$(nproc)}"\n'
         f"{script}\n"
     )
 
@@ -237,4 +281,6 @@ def main(args) -> int:
         env=env,
         cpu=args.cpu,
         keep=args.keep,
+        timeout_minutes=args.timeout_minutes,
+        mtk_tools=Path(args.mtk_tools) if args.mtk_tools else None,
     )

@@ -164,17 +164,17 @@ export:
     # largest window a tier is given, so a calibration lands on cores that finish it inside the
     # job limit.
     #
-    # One tier since 2026-10-07, the Namespace profile (vulkan.runner_tiers says what was
-    # measured): 15.7 GiB, no swap, 4 vCPUs. calibration_bytes puts a 1.2B LFM2.5 build at
-    # about 17.4 GiB (15 bytes a parameter, measured on 4-chunk builds), so none is placed; the
-    # 8-chunk 16k build peaked at 13.4 GiB, so a refit for more chunks may bring it back.
-    # max_window 2048 because 4 vCPUs are half the 8 that were given at most 4096.
+    # On Modal since 2026-10-07, like XNNPACK and Vulkan (see vulkan.runner_tiers): one tier at
+    # Modal's ceiling, and mtk-matrix sizes each window's Sandbox from calibration_bytes (memory,
+    # with export_mtk.MODAL_FLOOR_BYTES under it) and export_mtk.MODAL_SHAPES (cores and minutes,
+    # which is what grows with the window when calibration streams). x86 like every Modal host.
+    # Before: the Namespace profile (15.7 GiB, no swap, 4 vCPUs; finding 40), which carried no
+    # LFM2 window at all by this estimate.
     runner_tiers:
-      - label: namespace-profile-execupack
-        ram_bytes: 16833269760
-        disk_bytes: 101427666944
+      - label: modal
+        ram_bytes: 360777252864
+        disk_bytes: 549755813888
         swap_gib: 0
-        max_window: 2048
 
 # Modal: where the exports run since 2026-10-07 (pipeline/remote.py). The GitHub jobs stay on
 # the Namespace profile and drive a Sandbox per window, sized to that window, with the repo's

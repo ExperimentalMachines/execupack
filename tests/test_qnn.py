@@ -93,18 +93,45 @@ SDK = {
 }
 
 
-def test_the_sdk_is_probed_in_a_child_so_this_process_keeps_its_environment(monkeypatch):
+def installed_sdk(root: Path) -> dict:
+    """SDK with its paths under `root`, and the files qnn_sdk checks for created there."""
+    sdk = {**SDK, "root": str(root / "sdk"), "libcxx_dir": str(root / "libcxx")}
+    htp = root / "sdk" / "lib" / "x86_64-linux-clang" / "libQnnHtp.so"
+    htp.parent.mkdir(parents=True)
+    htp.touch()
+    (root / "libcxx").mkdir()
+    for name in SDK["libcxx_files"]:
+        (root / "libcxx" / name).touch()
+    return sdk
+
+
+def test_the_sdk_is_probed_in_a_child_so_this_process_keeps_its_environment(monkeypatch, tmp_path):
     calls = []
+    sdk = installed_sdk(tmp_path)
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(SDK) + "\n", stderr="Loaded libc++.so.1.0\n")
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(sdk) + "\n", stderr="Loaded libc++.so.1.0\n")
 
     monkeypatch.setattr(export_qnn.subprocess, "run", fake_run)
     monkeypatch.delenv("QNN_SDK_ROOT", raising=False)
-    assert export_qnn.qnn_sdk() == SDK
+    assert export_qnn.qnn_sdk() == sdk
     assert calls and calls[0][1] == "-c"
+    # ExecuTorch 1.5.1 downloads only when asked: the package import no longer does it.
+    assert "setup_qnn_sdk()" in calls[0][2]
     assert "QNN_SDK_ROOT" not in os.environ
+
+
+def test_a_probe_that_downloaded_nothing_fails_before_the_script_runs(monkeypatch, tmp_path):
+    # What the first Modal run hit: the paths came back, the files were never fetched.
+    sdk = {**SDK, "root": str(tmp_path / "sdk"), "libcxx_dir": str(tmp_path / "libcxx")}
+    monkeypatch.setattr(
+        export_qnn.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout=json.dumps(sdk) + "\n", stderr=""),
+    )
+    with pytest.raises(export_qnn.ExportError, match="libQnnHtp.so"):
+        export_qnn.qnn_sdk()
 
 
 def test_sonames():

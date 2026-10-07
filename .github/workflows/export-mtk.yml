@@ -75,13 +75,14 @@ jobs:
           CONTEXTS: ${{ inputs.contexts }}
           MODEL_ID: ${{ inputs.model_id }}
           REVISION: ${{ inputs.revision }}
-        # One entry per window, each carrying the smallest runner that can build it. The
-        # sizing is pipeline.export_mtk.pick_runner, the same calibration_bytes and
-        # calibration_disk_bytes the export gates on, so the matrix and the job cannot
-        # disagree about whether a window fits. Memory is one prompt's calibration steps;
-        # disk is every prompt's, since writer_batch_size=1 put the rest in the Arrow cache.
+          PROMPT_TOKENS: ${{ inputs.prompt_tokens }}
+        # One entry per window, each carrying the Modal Sandbox that can build it: memory from
+        # pipeline.export_mtk.calibration_bytes (the same estimate the export gates on),
+        # cores and minutes from export_mtk.MODAL_SHAPES, and the chunk count for a hybrid at
+        # 16k and up.
         run: |
-          entries=$(python3 -m pipeline mtk-matrix "$MODEL_ID" --revision "$REVISION" --contexts "$CONTEXTS")
+          entries=$(python3 -m pipeline mtk-matrix "$MODEL_ID" --revision "$REVISION" --contexts "$CONTEXTS" \
+            ${PROMPT_TOKENS:+--prompt-tokens "$PROMPT_TOKENS"})
           echo "$entries"
           echo "entries=$entries" >>"$GITHUB_OUTPUT"
 
@@ -94,106 +95,59 @@ jobs:
       matrix:
         soc: ${{ fromJSON(needs.targets.outputs.socs) }}
         entry: ${{ fromJSON(needs.targets.outputs.entries) }}
-    # Stays on x86: mtk_converter 8.13.0 is a cp310 x86 build and the NeuroPilot SDK
-    # ships x86_64 libraries (finding 14).
-    #
-    # Sized per window by the targets job above, because the cost is the window and not the
-    # model: a 2k export fits the smallest tier and a 32k one does not fit the largest
-    # without swap. Picking one size for all of them would either waste three quarters of
-    # the fleet on the small windows or fail the big ones.
-    runs-on: ${{ matrix.entry.runner }}
-    timeout-minutes: 350
+    # The export runs on Modal, in a Sandbox the targets job sized to this window: memory
+    # from export_mtk.calibration_bytes plus modal.memory_margin, and cores and minutes from
+    # export_mtk.MODAL_SHAPES, because streaming calibration's time grows with the window.
+    # This job only sends it, waits, and publishes what comes back. Modal's hosts are x86,
+    # which mtk_converter 8.13.0 (a cp310 x86 build) and the SDK's libraries need (finding 14).
+    runs-on: namespace-profile-execupack
+    # Past the longest Sandbox (export_mtk.MODAL_SHAPES), so the Sandbox times out first.
+    timeout-minutes: 630
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       HF_HUB_DISABLE_PROGRESS_BARS: "1"
       MODEL_ID: ${{ inputs.model_id }}
       REVISION: ${{ inputs.revision }}
       SOC: ${{ matrix.soc }}
       CONTEXT: ${{ matrix.entry.context }}
-      MTK_MAX_CHUNKS: ${{ inputs.max_chunks }}
+      MEMORY_MIB: ${{ matrix.entry.memory_mib }}
+      CORES: ${{ matrix.entry.cpu }}
+      SANDBOX_MINUTES: ${{ matrix.entry.timeout_minutes }}
+      # The input wins; otherwise the targets job's one-attention-layer-per-chunk count for a
+      # hybrid at 16k and up (finding 39), otherwise mtk.max_chunks.
+      MTK_MAX_CHUNKS: ${{ inputs.max_chunks || matrix.entry.max_chunks }}
       MTK_PRECISION: ${{ inputs.precision }}
       MTK_PROMPT_TOKENS: ${{ inputs.prompt_tokens }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The pipeline itself (fetch, reports, publishing) on the repo's usual Python.
-      - uses: ./.github/actions/setup-export
-        with:
-          # Sized with the runner: enough to absorb an estimate that is low, without taking
-          # so much of the filesystem that the Arrow cache has nowhere to go. Only the 2.6B
-          # at 32k is expected to spend it, and pick_runner prefers a tier that does not.
-          swap-gib: "${{ matrix.entry.swap_gib }}"
-          requirements: requirements/export-mtk.txt
+      - uses: ./.github/actions/setup-modal
 
       - name: Name things
         run: |
-          grep -E '^(NEUROPILOT_SDK_[A-Z0-9_]+|MTK_[A-Z_]+_VERSION|EXECUTORCH_COMMIT)=' config/versions.env >>"$GITHUB_ENV"
           soc_lower=$(echo "$SOC" | tr '[:upper:]' '[:lower:]')
           echo "TARGET=$soc_lower" >>"$GITHUB_ENV"
           echo "ARTIFACT=mtk-${soc_lower}-${MODEL_ID//\//--}-${CONTEXT}" >>"$GITHUB_ENV"
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        id: mtk-python
-        with:
-          python-version: ${{ env.MTK_PYTHON_VERSION }}
-          update-environment: false
-
-      # MediaTek's tools in their own Python 3.10 virtualenv (requirements/mtk-tools.txt says
-      # why). The NeuroPilot Express SDK is downloaded from MediaTek on every run, checked
-      # against the pinned digest, and deleted after its two wheels are installed: it is
-      # licensed by MediaTek Inc. under its own terms (THIRD_PARTY_NOTICES.md), which every
-      # run accepts, and nothing from it is cached, uploaded or published.
-      - name: MediaTek tools
-        run: |
-          python_bin="${{ steps.mtk-python.outputs.python-path }}"
-          "$python_bin" -m venv "$WORK_DIR/mtk-venv"
-          tool_python="$WORK_DIR/mtk-venv/bin/python"
-          "$tool_python" -m pip install --quiet --upgrade pip
-          "$tool_python" -m pip install --quiet "$(grep -E '^torch==' requirements/mtk-tools.txt)" \
-            --index-url https://download.pytorch.org/whl/cpu
-
-          sdk="$RUNNER_TEMP/neuropilot"
-          mkdir -p "$sdk"
-          curl -fsSL --retry 3 --retry-all-errors -o "$sdk.tar.gz" "$NEUROPILOT_SDK_URL"
-          echo "$NEUROPILOT_SDK_SHA256  $sdk.tar.gz" | sha256sum -c -
-          tar xzf "$sdk.tar.gz" -C "$sdk" --strip-components=1 --wildcards \
-            "*/mtk_neuron-${MTK_NEURON_VERSION}-*.whl" "*/mtk_converter-${MTK_CONVERTER_VERSION}+public-cp310-*.whl"
-          # The 8.0.8 archive keeps mtk_converter only under mtk_converter-*_public_packages/.
-          neuron_whl=$(find "$sdk" -name "mtk_neuron-${MTK_NEURON_VERSION}-*.whl" | head -1)
-          converter_whl=$(find "$sdk" -name "mtk_converter-${MTK_CONVERTER_VERSION}+public-cp310-*.whl" | head -1)
-          test -n "$neuron_whl" && test -n "$converter_whl"
-          "$tool_python" -m pip install --quiet -r requirements/mtk-tools.txt "$neuron_whl" "$converter_whl"
-          rm -rf "$sdk" "$sdk.tar.gz"
-          "$tool_python" -m pip list | grep -iE '^(torch|torchao|executorch|transformers|mtk.converter|mtk.neuron) '
-          echo "MTK_PYTHON=$tool_python" >>"$GITHUB_ENV"
-
-      # The LLM export scripts are in the ExecuTorch source, not the wheel (BSD, fetched at
-      # the pinned commit), with this repo's patches from third_party/executorch/patches.
-      - name: ExecuTorch examples/mediatek
-        run: |
-          src="$WORK_DIR/executorch"
-          git init -q "$src"
-          git -C "$src" remote add origin https://github.com/pytorch/executorch.git
-          git -C "$src" sparse-checkout set examples/mediatek
-          git -C "$src" fetch -q --depth 1 origin "$EXECUTORCH_COMMIT"
-          git -C "$src" checkout -q FETCH_HEAD
-          for patch in third_party/executorch/patches/mediatek-*.patch; do
-            git -C "$src" apply -v "$GITHUB_WORKSPACE/$patch"
-          done
-          echo "MTK_EXAMPLES=$src/examples/mediatek" >>"$GITHUB_ENV"
-
-      # Exit 4 means this runner cannot build this window: recorded as a skip, so the other
-      # jobs of the matrix stand on their own.
-      - name: Export
+      # scripts/mtk-setup.sh downloads the NeuroPilot SDK inside the Sandbox, checks it, installs
+      # its two wheels and deletes it, then fetches and patches ExecuTorch's examples/mediatek:
+      # nothing of the SDK is in the image, cached or brought back. Exit 4 means this window
+      # cannot be built (the export's own gate): recorded as a skip, so the other jobs of the
+      # matrix stand on their own.
+      - name: Export on Modal
         run: |
           set +e
-          python -m pipeline export-mtk "$MODEL_ID" --soc "$SOC" --revision "$REVISION" \
-            --out "$WORK_DIR/out" --work "$WORK_DIR/work" --context "$CONTEXT"
+          python -m pipeline modal-run --memory-mib "$MEMORY_MIB" --cpu "$CORES" --timeout-minutes "$SANDBOX_MINUTES" \
+            --requirements requirements/export-mtk.txt --mtk-tools requirements/mtk-tools.txt \
+            --get "$WORK_DIR/out" \
+            --script 'bash scripts/mtk-setup.sh && python -m pipeline export-mtk "$MODEL_ID" --soc "$SOC" --revision "$REVISION" --out "$OUT" --work "$WORK/export" --context "$CONTEXT" --tool-python /opt/mtk-venv/bin/python --examples "$WORK/executorch/examples/mediatek"'
           rc=$?
           set -e
           if [ "$rc" -eq 4 ]; then
             echo "SKIPPED=1" >>"$GITHUB_ENV"
-            echo "::warning title=Window skipped::$MODEL_ID at $CONTEXT tokens on $SOC cannot be exported on this runner"
+            echo "::warning title=Window skipped::$MODEL_ID at $CONTEXT tokens on $SOC cannot be exported"
             exit 0
           fi
           exit "$rc"
