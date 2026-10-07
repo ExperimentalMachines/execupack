@@ -21,7 +21,7 @@ on:
         default: ""
         type: string
       max_chunks:
-        description: Maximum chunks to divide the model into (LFM2.5 at 16k built with at most one attention layer per chunk: 8 for the 1.2B, 10 for the 2.6B); empty for mtk.max_chunks in config/pipeline.yaml
+        description: "Maximum chunks to divide the model into (LFM2.5 at 16k built with at most one attention layer per chunk, 8 for the 1.2B and 10 for the 2.6B); empty for mtk.max_chunks in config/pipeline.yaml"
         default: ""
         type: string
       precision:
@@ -50,9 +50,8 @@ concurrency:
 
 jobs:
   targets:
-    # Hub metadata only, no model download. ARM is fine here precisely because it never
-    # touches MediaTek's x86-only toolchain; it reads a config.json and does arithmetic.
-    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    # Hub metadata only, no model download: it reads a config.json and does arithmetic.
+    runs-on: namespace-profile-execupack
     env:
       # The matrix now reads the model's config to size each window's runner, and some of
       # the watched repos are private, so this job needs the token the export job has.
@@ -89,6 +88,8 @@ jobs:
 
   export:
     needs: targets
+    # An empty matrix is an error to GitHub, so a model no runner can carry stops at targets.
+    if: ${{ needs.targets.outputs.entries != '[]' }}
     strategy:
       fail-fast: false
       matrix:
