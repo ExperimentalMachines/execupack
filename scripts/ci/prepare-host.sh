@@ -41,7 +41,7 @@ else
   work_base=/
   other_base=/mnt
 fi
-work_dir="${work_base%/}/exe-expo-work"
+work_dir="${work_base%/}/execupack-work"
 sudo mkdir -p "$work_dir"
 sudo chown "$(id -u):$(id -g)" "$work_dir"
 
@@ -55,8 +55,8 @@ elif [ "$other_base" = "/" ] && [ "$(free_bytes /)" -gt $((swap_bytes + margin))
   swap_base=/
 fi
 sudo swapoff -a || true
-sudo rm -f /mnt/swapfile /swapfile /mnt/exe-expo.swap /exe-expo.swap
-swap_file="${swap_base%/}/exe-expo.swap"
+sudo rm -f /mnt/swapfile /swapfile /mnt/execupack.swap /execupack.swap
+swap_file="${swap_base%/}/execupack.swap"
 # Namespace's runners are containers that refuse swapon ("Operation not permitted", measured
 # 2026-10-07 on namespace-profile-execupack). There the export has its RAM and nothing more;
 # the job's own gate reads SwapTotal from /proc/meminfo (exporting.host_budget), so it budgets

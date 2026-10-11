@@ -1,4 +1,4 @@
-# exe-expo: Hugging Face → ExecuTorch export pipeline
+# ExecuPack: Hugging Face → ExecuTorch export pipeline
 
 Watches Hugging Face for new small dense LLMs and exports them to ExecuTorch `.pte` for
 the [openweights](https://github.com/alpharomercoma/openweights) Android app and its
