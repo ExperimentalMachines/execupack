@@ -1,6 +1,21 @@
-# exe-expo
+<div align="center">
 
-Exports small open-weight LLMs from Hugging Face to ExecuTorch `.pte` files for the
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/lockup-dark.svg">
+  <img src="docs/brand/lockup.svg" width="360" alt="ExecuPack">
+</picture>
+
+**Open models, packed for phone chips.**<br>
+Hugging Face checkpoints exported to checked ExecuTorch `.pte` files for every Android backend.
+
+</div>
+
+> [!NOTE]
+> An independent project by [Experimental Machines](https://experimentalmachines.org). Not
+> affiliated with, endorsed by or sponsored by the PyTorch Foundation or Meta. It exports models
+> with ExecuTorch; it does not use or modify their logos. Brand kit: [docs/brand](docs/brand).
+
+ExecuPack exports small open-weight LLMs from Hugging Face to ExecuTorch `.pte` files for the
 [openweights](https://github.com/alpharomercoma/openweights) Android app. Every export
 (XNNPACK, Vulkan, QNN and MediaTek) and the GPTQ solve runs on [Modal](https://modal.com), in a
 Sandbox sized to its model and window (up to 336 GiB and 64 cores); the GitHub jobs, on
