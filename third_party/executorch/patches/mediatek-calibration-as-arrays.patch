@@ -5,7 +5,7 @@
  
  
 +def _retry_compile_service_start():
-+    """exe-expo: MediaTek's compiler client starts a local service on a random port per
++    """execupack: MediaTek's compiler client starts a local service on a random port per
 +    compile and polls it over HTTP; starting it fails now and then, after hours of work (the
 +    same retry lfm2.py carries, mediatek-lfm2.patch). The compile is a pure function of its
 +    input, so it is asked again; any error that is not about the service, or a third
@@ -44,12 +44,12 @@
                  "eos_token_id_tensor": torch.tensor(tokenizer.eos_token_id),
                  "response_cap": args.response_cap,
              },
-+            # exe-expo: each row is one prompt's every step, each a full fp32 KV cache at the
++            # execupack: each row is one prompt's every step, each a full fp32 KV cache at the
 +            # window; the default writer_batch_size of 1000 kept all of them resident before
 +            # any reached Arrow. One row at a time is what export_mtk.calibration_bytes sizes.
 +            writer_batch_size=1,
          )
-+        # exe-expo: read the prepared tensors back as arrays. Without a format, iterating
++        # execupack: read the prepared tensors back as arrays. Without a format, iterating
 +        # the dataset decodes every row (all chunks' fp32 KV caches) into nested Python
 +        # lists, which thrashes swap on a 16 GB host; the values are the same.
 +        cal_dataset = cal_dataset.with_format("numpy")
@@ -63,7 +63,7 @@
  
  
 +def _retry_compile_service_start():
-+    """exe-expo: MediaTek's compiler client starts a local service on a random port per
++    """execupack: MediaTek's compiler client starts a local service on a random port per
 +    compile and polls it over HTTP; starting it fails now and then, after hours of work (the
 +    same retry lfm2.py carries, mediatek-lfm2.patch). The compile is a pure function of its
 +    input, so it is asked again; any error that is not about the service, or a third
@@ -102,12 +102,12 @@
                  "eos_token_id_tensor": torch.tensor(tokenizer.eos_token_id),
                  "response_cap": args.response_cap,
              },
-+            # exe-expo: each row is one prompt's every step, each a full fp32 KV cache at the
++            # execupack: each row is one prompt's every step, each a full fp32 KV cache at the
 +            # window; the default writer_batch_size of 1000 kept all of them resident before
 +            # any reached Arrow. One row at a time is what export_mtk.calibration_bytes sizes.
 +            writer_batch_size=1,
          )
-+        # exe-expo: read the prepared tensors back as arrays. Without a format, iterating
++        # execupack: read the prepared tensors back as arrays. Without a format, iterating
 +        # the dataset decodes every row (all chunks' fp32 KV caches) into nested Python
 +        # lists, which thrashes swap on a 16 GB host; the values are the same.
 +        cal_dataset = cal_dataset.with_format("numpy")

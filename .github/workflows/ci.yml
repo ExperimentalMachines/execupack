@@ -21,13 +21,13 @@ jobs:
           echo "arch $(uname -m), $(nproc) CPUs"
           grep -E 'MemTotal|MemAvailable|SwapTotal' /proc/meminfo
           df -B1 / /mnt 2>/dev/null || df -B1 /
-          if sudo -n fallocate -l 1G /exe-expo-swaptest 2>/dev/null && sudo mkswap /exe-expo-swaptest >/dev/null \
-             && sudo swapon /exe-expo-swaptest; then
-            echo "swap file: works"; sudo swapoff /exe-expo-swaptest
+          if sudo -n fallocate -l 1G /execupack-swaptest 2>/dev/null && sudo mkswap /execupack-swaptest >/dev/null \
+             && sudo swapon /execupack-swaptest; then
+            echo "swap file: works"; sudo swapoff /execupack-swaptest
           else
             echo "swap file: refused"
           fi
-          sudo rm -f /exe-expo-swaptest
+          sudo rm -f /execupack-swaptest
 
       - name: Read versions
         id: versions

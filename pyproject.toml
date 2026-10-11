@@ -1,5 +1,5 @@
 [project]
-name = "exe-expo"
+name = "execupack"
 version = "0.1.0"
 description = "Watches Hugging Face for small dense LLMs and exports them to ExecuTorch for the openweights app"
 requires-python = ">=3.10"
