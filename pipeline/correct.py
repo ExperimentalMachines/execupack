@@ -88,6 +88,63 @@ def corrected(report: dict, arch: sizing.Architecture, cfg, commit: str, today: 
     return new
 
 
+KV_FIELDS = (
+    "window.kv_cache_bytes_per_token",
+    "window.kv_cache_ring_bytes",
+    "window.device_resident_bytes",
+    "window.fits_phone_budget",
+    "window.table[].kv_cache_bytes",
+    "window.table[].device_resident_bytes",
+    "window.table[].fits_device",
+)
+
+
+def corrected_kv(report: dict, arch: sizing.Architecture, cfg, commit: str, today: str) -> dict | None:
+    """A windowed model's KV figures with the sliding layers counted as the ring they are.
+
+    LFM3's first reports counted all 11 attending layers at the full window, where 5 keep a
+    ring of window + prefill chunk slots (pipeline/lfm3_model.py); at 32k that put the cache
+    at 1.48 GB against 0.85. Like the fp32 correction, the old figures must reproduce exactly
+    from the full-cache sizing before anything is replaced. The export-time host estimates
+    (``export_peak_bytes``, ``estimates``) are a record of what the build was sized with and
+    stay as they are.
+    """
+    recipe = report.get("recipe") or {}
+    if report.get("backend") != "xnnpack" or not arch.windowed_layers:
+        return None
+    window = report["window"]
+    if "kv_cache_ring_bytes" in window:
+        return None
+    full = dataclasses.replace(arch, windowed_layers=0, window=0)
+    qmode = recipe.get("qmode", "8da4w").split("-")[0]
+    overhead = cfg.runtime_overhead_bytes
+    if window["kv_cache_bytes_per_token"] != sizing.kv_bytes_per_token(full):
+        raise CannotCorrect(f"{report['files'][0]['path']}: per-token KV is not the full-cache figure")
+    for row in (window, *window["table"]):
+        if row["device_resident_bytes"] != sizing.device_resident_bytes(full, row["context"], overhead, qmode):
+            raise CannotCorrect(f"{report['files'][0]['path']}: resident bytes at {row['context']} do not reproduce")
+    new = copy.deepcopy(report)
+    chunk = recipe.get("prefill_chunk") or sizing.PREFILL_CHUNK
+    budget = window["phone_budget_bytes"]
+    new["window"]["kv_cache_bytes_per_token"] = sizing.kv_bytes_per_token(arch)
+    new["window"]["kv_cache_ring_bytes"] = sizing.kv_ring_bytes(arch, window["context"], chunk)
+    for row in (new["window"], *new["window"]["table"]):
+        row["device_resident_bytes"] = sizing.device_resident_bytes(arch, row["context"], overhead, qmode)
+    new["window"]["fits_phone_budget"] = new["window"]["device_resident_bytes"] <= budget
+    for row in new["window"]["table"]:
+        row["kv_cache_bytes"] = sizing.kv_cache_bytes(arch, row["context"])
+        row["fits_device"] = row["device_resident_bytes"] <= budget
+    new.setdefault("corrections", []).append(
+        {
+            "date": today,
+            "by": f"execupack {commit}",
+            "fields": list(KV_FIELDS),
+            "reason": "sliding-window layers sized as full caches; they keep a fixed ring. The .pte is unchanged",
+        }
+    )
+    return new
+
+
 def correct_repo(repo_id: str, commit: str, dry_run: bool = True) -> dict:
     """Correct every fp32 report in one Hub repo; return what changed (and the commit URL)."""
     from huggingface_hub import CommitOperationAdd, hf_hub_download
@@ -106,11 +163,14 @@ def correct_repo(repo_id: str, commit: str, dry_run: bool = True) -> dict:
     archs: dict[tuple, sizing.Architecture] = {}
     for path, report in reports.items():
         key = (report["source"]["id"], report["source"]["sha"])
-        if report.get("recipe", {}).get("qmode") == "fp32" and key not in archs:
+        if report.get("backend") == "xnnpack" and key not in archs:
             source = hub.fetch(*key)
             archs[key] = families.architecture(source.config, source.total_params)
-        fixed = corrected(report, archs[key], cfg, commit, today) if key in archs else None
-        if fixed is not None:
+        if key not in archs:
+            continue
+        fixed = corrected(report, archs[key], cfg, commit, today) or report
+        fixed = corrected_kv(fixed, archs[key], cfg, commit, today) or fixed
+        if fixed is not report:
             changed[path] = fixed
     result = {"repo": repo_id, "revision": info.sha, "corrected": sorted(changed), "commit_url": None}
     if not changed or dry_run:
@@ -131,7 +191,7 @@ def correct_repo(repo_id: str, commit: str, dry_run: bool = True) -> dict:
     commit_info = hf.create_commit(
         repo_id,
         operations,
-        commit_message=f"correct fp32 report fields ({len(changed)} reports); no .pte changed",
+        commit_message=f"correct report fields ({len(changed)} reports); no .pte changed",
         parent_commit=info.sha,
     )
     result["commit_url"] = commit_info.commit_url

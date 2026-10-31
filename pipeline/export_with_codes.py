@@ -1,7 +1,7 @@
 """Run ``export_llm`` with the graph fixes a published file needs, and optionally with
 solved int4 codes in place of its own rounding.
 
-    python -m pipeline.export_with_codes --config <export_llm.yaml> [--codes <codes.pt>] [--lfm2-state-fix]
+    python -m pipeline.export_with_codes --config <export_llm.yaml> [--codes <codes.pt>] [--lfm2-state-fix] [--lfm3]
 
 A separate entry point, invoked as a subprocess like plain ``export_llm``, so the exporter
 keeps measuring a child's peak RSS and an out-of-memory export still fails as a process
@@ -72,6 +72,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="clear the short convolution's state at position zero (pipeline/lfm2_state.py)",
     )
+    parser.add_argument(
+        "--lfm3",
+        action="store_true",
+        help="build LFM3 params with pipeline/lfm3_model.py, the definition ExecuTorch 1.5.1 lacks",
+    )
     args = parser.parse_args(argv)
 
     import torch
@@ -81,6 +86,12 @@ def main(argv: list[str] | None = None) -> int:
 
         lfm2_state.apply()
         print("applied the LFM2 short-convolution state fix")
+
+    if args.lfm3:
+        from pipeline import lfm3_model
+
+        lfm3_model.apply()
+        print("applied the LFM3 model definition (pipeline/lfm3_model.py)")
 
     if args.codes:
         from executorch.examples.models.llama.source_transformation import quantize as quantize_module

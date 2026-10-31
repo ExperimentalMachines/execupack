@@ -107,6 +107,7 @@ converted to ExecuTorch's checkpoint layout by `pipeline/convert.py`.
 | Qwen2.5 | `Qwen2ForCausalLM` | yes |
 | Llama 3.2, SmolLM2 | `LlamaForCausalLM` | yes (q/k un-permuted for Meta RoPE) |
 | Gemma 3, SmolLM3 | `Gemma3ForCausalLM`, `SmolLM3ForCausalLM` | not yet: not in `export_llm`'s model list; needs a validated path (optimum-executorch or params support) |
+| LFM3 | `Lfm3ForCausalLM` (remote code) | through `pipeline/lfm3_model.py`: ExecuTorch has no definition, and 1.5.1's transformer cannot express windowed layers, two RoPEs, a per-head gate or sandwich norms (finding 42) |
 
 Smoke test: the Linux wheel ships `TextLLMRunner`, the same C++ runner the app calls
 through `LlmModule`. Greedy generation of a short prompt must produce non-degenerate text

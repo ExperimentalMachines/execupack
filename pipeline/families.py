@@ -65,6 +65,12 @@ _LFM2_NO_VULKAN = (
     "lowers to it segfaults in the 1.4.0 runtime at the first prefill"
 )
 _LFM2_NO_QNN = "not in ExecuTorch 1.5.1's Qualcomm SUPPORTED_LLM_MODELS registry"
+# LFM3 runs on pipeline/lfm3_model.py, a definition this repository adds to export_llm's
+# transformer. The vendor paths each build their own model and have none for it, and the
+# Vulkan recipe has no kernel for LFM2's short convolution, which LFM3 keeps.
+_LFM3_NO_VULKAN = "the Vulkan delegate has no kernel for the short convolution (as for LFM2)"
+_LFM3_NO_QNN = "not in ExecuTorch 1.5.1's Qualcomm SUPPORTED_LLM_MODELS registry"
+_LFM3_NO_MTK = "no LFM3 definition in ExecuTorch 1.5.1's examples/mediatek"
 
 FAMILIES: tuple[Family, ...] = (
     Family("qwen3", ("Qwen3ForCausalLM",)),
@@ -75,6 +81,13 @@ FAMILIES: tuple[Family, ...] = (
         "lfm2",
         ("Lfm2ForCausalLM",),
         {"vulkan": _LFM2_NO_VULKAN, "qnn": _LFM2_NO_QNN},
+    ),
+    # LFM3: LFM2's hybrid with windowed attention layers, two RoPEs, a per-head output gate
+    # and sandwich norms. XNNPACK only, through pipeline/lfm3_model.py.
+    Family(
+        "lfm3",
+        ("Lfm3ForCausalLM",),
+        {"vulkan": _LFM3_NO_VULKAN, "qnn": _LFM3_NO_QNN, "mtk": _LFM3_NO_MTK},
     ),
     Family("qwen2_5", ("Qwen2ForCausalLM",), {"mtk": _MTK_QWEN2_MASK}),
     Family("llama", ("LlamaForCausalLM",)),
@@ -258,7 +271,17 @@ def architecture(config: dict, total_params: int) -> Architecture:
         # transformers' PretrainedConfig default, the same one convert.py assumes.
         tied_embeddings=bool(c.get("tie_word_embeddings", True)),
         attention_layers=attending_layers(c),
+        # Only LFM3's exporter keeps its windowed layers in a ring (pipeline/lfm3_model.py);
+        # Gemma 3's configs name sliding layers too, and no path here rings them.
+        **_windowed(c),
     )
+
+
+def _windowed(c: dict) -> dict:
+    if c.get("model_type") != "lfm3":
+        return {}
+    layer_types = c.get("layer_types") or []
+    return {"windowed_layers": layer_types.count("sliding_attention"), "window": int(c.get("sliding_window") or 0)}
 
 
 def attending_layers(c: dict) -> int | None:
@@ -334,6 +357,16 @@ class XnnpackPlan:
     params: dict
     converter: str  # key into pipeline.convert.CONVERTERS
 
+    @property
+    def lfm3(self) -> bool:
+        """The model is built by pipeline/lfm3_model.py, which every process tracing it applies."""
+        return self.converter == "lfm3"
+
+    @property
+    def state_reset_at_zero(self) -> bool:
+        """A short-convolution hybrid whose export clears its state at position zero."""
+        return self.converter in ("lfm2", "lfm3")
+
 
 def xnnpack_plan(family: Family, config: dict) -> XnnpackPlan:
     """ExecuTorch params and model class for this checkpoint, or UnsupportedModel."""
@@ -341,6 +374,9 @@ def xnnpack_plan(family: Family, config: dict) -> XnnpackPlan:
         raise UnsupportedModel(family.unsupported["xnnpack"])
     c = text_config(config)
     _check_common(c)
+    if family.key == "lfm3":
+        # Two RoPE thetas, so no top-level rope_theta for _common_params to read.
+        return _lfm3_plan(c)
     params = _common_params(c)
 
     if family.key == "qwen3":
@@ -403,3 +439,60 @@ def xnnpack_plan(family: Family, config: dict) -> XnnpackPlan:
         return XnnpackPlan("llama3_2", params, "llama")
 
     raise UnsupportedModel(f"no XNNPACK recipe for family {family.key}")
+
+
+def _lfm3_plan(c: dict) -> XnnpackPlan:
+    """LFM3's params for pipeline/lfm3_model.py, from the fields of ExecuTorch's ModelArgs.
+
+    ``rope_theta`` is the global layers' and ``local_rope_theta`` the windowed layers' (the
+    field 1.5.1 declares for Gemma 3 and never reads); ``partial_rotary_factor`` applies to
+    the global layers only, as in the checkpoint's rope_parameters. The convolution width
+    rides in ``attention_kwargs``, which upstream passes to attention constructors and
+    ignores: without pipeline/lfm3_model.py the width-7 convolution weights do not fit
+    upstream's width-3 block, so the load fails instead of building another model.
+    """
+    layer_types = c.get("layer_types") or []
+    _require(bool(layer_types), "LFM3 config has no layer_types")
+    _require(len(layer_types) == int(c["num_hidden_layers"]), "layer_types does not match num_hidden_layers")
+    _require(
+        set(layer_types) <= {"conv", "full_attention", "sliding_attention"},
+        f"unknown LFM3 layer types: {sorted(set(layer_types))}",
+    )
+    _require("sliding_attention" in layer_types, "an LFM3 config without windowed layers is not validated")
+    _require(not c.get("conv_bias"), "LFM3 with a convolution bias is not supported")
+    _require(bool(c.get("tie_word_embeddings", True)), "LFM3 with untied embeddings is not supported")
+    _require(bool(c.get("use_sandwich_norm")), "LFM3 without sandwich norms is not validated")
+    window = c.get("sliding_window")
+    _require(isinstance(window, int) and window > 0, f"sliding_window {window!r}")
+    rope = c.get("rope_parameters") or {}
+    full, local = rope.get("full_attention") or {}, rope.get("sliding_attention") or {}
+    for name, block in (("full_attention", full), ("sliding_attention", local)):
+        _require(block.get("rope_type", "default") == "default", f"{name} RoPE {block.get('rope_type')!r}")
+        _require("rope_theta" in block, f"{name} has no rope_theta")
+    _require(float(local.get("partial_rotary_factor", 1.0)) == 1.0, "partial RoPE on the windowed layers")
+    n_heads = int(c["num_attention_heads"])
+    dim = int(c["hidden_size"])
+    params = {
+        "dim": dim,
+        "ffn_dim_multiplier": 1,
+        "hidden_dim": int(c["intermediate_size"]),
+        "n_heads": n_heads,
+        "head_dim": int(c.get("head_dim") or dim // n_heads),
+        "n_kv_heads": int(c.get("num_key_value_heads") or n_heads),
+        "n_layers": int(c["num_hidden_layers"]),
+        "norm_eps": float(c["norm_eps"]),
+        "rope_theta": float(full["rope_theta"]),
+        "local_rope_theta": float(local["rope_theta"]),
+        "partial_rotary_factor": float(full.get("partial_rotary_factor", 1.0)),
+        "vocab_size": int(c["vocab_size"]),
+        "use_hf_rope": True,
+        "use_qk_norm": True,
+        "qk_norm_before_rope": True,
+        "layer_types": list(layer_types),
+        "sliding_window": window,
+        "post_attention_norm": True,
+        "post_ffn_norm": True,
+        "attention_kwargs": {"conv_L_cache": int(c.get("conv_L_cache") or 3)},
+    }
+    # model_class only picks export_llm's example directory; LFM2's is the nearest relative.
+    return XnnpackPlan("lfm2_5_1_2b", params, "lfm3")

@@ -163,6 +163,39 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         "[openweights](https://github.com/alpharomercoma/openweights) Android app or any "
         f"ExecuTorch {reports[0]['toolchain']['executorch']} runtime.",
         "",
+    ]
+    if source.get("variant") == "base":
+        # Published only on request (--allow-base): say what it is before anything else.
+        out += [
+            "This is the base checkpoint, a completion model: it continues text and is not trained to "
+            "follow chat turns or call tools. Give it a prefix to continue rather than a chat prompt.",
+            "",
+        ]
+    if naming.ahead_of_app(naming.source_name(source["id"])):
+        # The app picks the chat template from the name and has none for this family yet, so
+        # it refuses these files until it gains one; the card says so instead of implying
+        # they run there today.
+        out += [
+            "The openweights app has no chat template for this model family yet, so it does not "
+            "load these files until it gains one. Any ExecuTorch runtime with the LLM runner's "
+            "custom ops runs them today"
+            + (
+                "."
+                if source.get("variant") == "base"
+                else "; render prompts with the model's own `chat_template.jinja`."
+            ),
+            "",
+        ]
+    if any(r["recipe"].get("converter") == "lfm3" for r in reports):
+        out += [
+            "ExecuTorch has no LFM3 definition of its own yet. These files are traced from "
+            "[ExecuPack](https://github.com/ExperimentalMachines/execupack)'s "
+            "(`pipeline/lfm3_model.py`), which matches the checkpoint's own `modeling_lfm3.py` "
+            "on fp32 logits, with ExecuTorch's custom KV-cache and SDPA ops: the windowed layers "
+            "keep a ring of their last 256 tokens plus one prefill chunk instead of the full window.",
+            "",
+        ]
+    out += [
         "## Files",
         "",
         f"Windows in this repo: {window_spans(reports)}. "
@@ -210,10 +243,16 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         kv = r["window"].get("kv_cache_bytes_per_token")
         if kv:
             ctx = r["window"]["context"]
+            ring = r["window"].get("kv_cache_ring_bytes") or 0
+            whole = (
+                f"{kv * ctx + ring:,} bytes for the whole window ({ring:,} of them the sliding-window "
+                "layers' fixed ring)"
+                if ring
+                else f"{kv * ctx:,} bytes for the whole window"
+            )
             out.append(
                 f"- {BACKEND_TITLES[r['backend']]} at {ctx:,} tokens: the KV cache costs {kv:,} bytes per "
-                f"token (fp32), {kv * ctx:,} bytes for the whole window, allocated in full when the "
-                "model loads."
+                f"token (fp32), {whole}, allocated in full when the model loads."
             )
     out += ["", "## How it was made", ""]
     described = set()

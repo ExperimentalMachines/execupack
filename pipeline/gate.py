@@ -85,11 +85,23 @@ QUIET: tuple[str, ...] = (
 
 
 def prompts(tokenizer) -> dict[str, str]:
-    """Every gate question in the app's own prompt, ready for the assistant's turn."""
+    """Every gate question in the app's own prompt, ready for the assistant's turn.
+
+    With the template's reasoning switched off. The gate reads one token, so that token has
+    to be the decision, and a reasoning model's first token is not: Qwen3's template lets it
+    open ``<think>``, which every published Qwen3 gate graded at 0.9999 on every row, and
+    LFM3's opens the block itself, leaving the first word of the reasoning ("We", "The"), a
+    near tie that a 4-bit file broke the other way on two quiet rows without calling
+    anything (2026-10-31). With the block closed in the prompt, the next token is the answer
+    or the tool call, for every family; templates without the switch render as before.
+    """
     from pipeline import calibration
 
-    out = {q: calibration.render_app(tokenizer, f"{q}\n\n{calibration.TRAILER.format(subject=s)}") for q, s in SEARCH}
-    out.update({q: calibration.render_app(tokenizer, q) for q in QUIET})
+    def app(turn: str) -> str:
+        return calibration.render_app(tokenizer, turn, thinking=False)
+
+    out = {q: app(f"{q}\n\n{calibration.TRAILER.format(subject=s)}") for q, s in SEARCH}
+    out.update({q: app(q) for q in QUIET})
     return out
 
 
@@ -162,7 +174,11 @@ def check(ref: dict, measured: dict) -> dict:
     agreed = sum(1 for q in search if measured[q]["top"] == ref["rows"][q]["token"])
     # A quiet row is one where fp32 answers instead of calling. The export must do the same:
     # picking fp32's token there means it answered, and any other top token is worth seeing.
-    quiet_followed = sum(1 for q in QUIET if measured[q]["top"] == ref["rows"][q]["token"])
+    # Graded only where fp32 is sure of its answer, as the calling rows are: a quiet row fp32
+    # itself splits (LFM3-1.7B on Pride and Prejudice at 0.27, its base model on three of four
+    # at 0.09 to 0.39) cannot tell a regression from the coin landing the other way.
+    quiet = [q for q in QUIET if ref["rows"][q]["p"] > CONFIDENT]
+    quiet_followed = sum(1 for q in quiet if measured[q]["top"] == ref["rows"][q]["token"])
     # Whether this model tool-calls at all. LFM2.5-2.6B answers "The" at probability 1.0 to
     # every row here, trailered or not: it is not tool-trained, so fp32's chosen token is the
     # same on the search rows as on the quiet ones and the gate cannot see a tool-calling
@@ -180,9 +196,9 @@ def check(ref: dict, measured: dict) -> dict:
         )
     if agreed < MIN_AGREEMENT * len(search):
         problems.append(f"kept fp32's choice on {agreed} of {len(search)} calling rows, under {MIN_AGREEMENT:.0%}")
-    if quiet_followed < len(QUIET) - 1:
+    if quiet_followed < len(quiet) - 1:
         problems.append(
-            f"answered like fp32 on only {quiet_followed} of {len(QUIET)} quiet rows: it is reaching for a tool "
+            f"answered like fp32 on only {quiet_followed} of {len(quiet)} quiet rows: it is reaching for a tool "
             "on questions the unquantised model answers itself"
         )
     return {
@@ -195,7 +211,8 @@ def check(ref: dict, measured: dict) -> dict:
         "shortfall": round(fp32_mean - export_mean, 4),
         "quiet_rows_answered_like_fp32": quiet_followed,
         "measures_tool_calling": informative,
-        "quiet_rows": len(QUIET),
+        "quiet_rows": len(quiet),
+        "fp32_undecided_quiet_rows": [q for q in QUIET if q not in quiet],
         "fp32_undecided_rows": undecided,
         "rows": {
             q: {"fp32": round(ref["rows"][q]["p"], 4), "export": round(measured[q]["p"], 4), "kind": kind}

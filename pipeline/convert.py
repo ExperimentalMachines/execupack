@@ -69,9 +69,32 @@ _LFM2_LAYER_KEYS = {
     "conv.out_proj.weight": "conv.out_proj.weight",
     "conv.in_proj.weight": "conv.in_proj.weight",
 }
+# LFM3 (pipeline/lfm3_model.py): LFM2's operator and feed-forward names, Llama's attention
+# names, plus a per-head output gate and the sandwich norms after each operator and each
+# feed-forward. HF's post_operator_norm is post_attention_norm here for both layer kinds.
+_LFM3_LAYER_KEYS = {
+    "self_attn.q_proj.weight": "attention.wq.weight",
+    "self_attn.k_proj.weight": "attention.wk.weight",
+    "self_attn.v_proj.weight": "attention.wv.weight",
+    "self_attn.o_proj.weight": "attention.wo.weight",
+    "self_attn.q_norm.weight": "attention.q_norm_fn.weight",
+    "self_attn.k_norm.weight": "attention.k_norm_fn.weight",
+    "self_attn.gate_proj.weight": "attention.gate_proj.weight",
+    "operator_norm.weight": "attention_norm.weight",
+    "post_operator_norm.weight": "post_attention_norm.weight",
+    "ffn_norm.weight": "ffn_norm.weight",
+    "post_ffn_norm.weight": "post_ffn_norm.weight",
+    "feed_forward.w1.weight": "feed_forward.w1.weight",
+    "feed_forward.w2.weight": "feed_forward.w2.weight",
+    "feed_forward.w3.weight": "feed_forward.w3.weight",
+    "conv.conv.weight": "conv.conv.weight",
+    "conv.out_proj.weight": "conv.out_proj.weight",
+    "conv.in_proj.weight": "conv.in_proj.weight",
+}
 # One HF tensor that becomes three: the short convolution's fused input projection is stored
 # as B, C and x stacked on dim 0, and ExecuTorch's ShortConv reads them apart.
-SPLIT_THREE = {"lfm2": ("conv.in_proj.weight", ("conv.B_proj.weight", "conv.C_proj.weight", "conv.x_proj.weight"))}
+_IN_PROJ = ("conv.in_proj.weight", ("conv.B_proj.weight", "conv.C_proj.weight", "conv.x_proj.weight"))
+SPLIT_THREE = {"lfm2": _IN_PROJ, "lfm3": _IN_PROJ}
 # Buffers some checkpoints carry that the model recomputes.
 _IGNORED = re.compile(r"(rotary_emb\.inv_freq|\.masked_bias|\.attn\.bias)$")
 
@@ -83,12 +106,13 @@ CONVERTERS = {
     # LFM2 shares none of the per-layer names, so its map replaces rather than extends the
     # common one; every layer is a short convolution or an attention block, never both.
     "lfm2": (_LFM2_LAYER_KEYS, False),
+    "lfm3": (_LFM3_LAYER_KEYS, False),
 }
 # Converters whose per-layer map stands alone instead of extending _LAYER_KEYS.
-_STANDALONE = {"lfm2"}
+_STANDALONE = {"lfm2", "lfm3"}
 # A conv layer and an attention layer carry different tensors, so the per-layer count that
 # the other families check cannot apply; LFM2 is checked by total instead.
-_MIXED_LAYERS = {"lfm2"}
+_MIXED_LAYERS = {"lfm2", "lfm3"}
 
 
 def unpermute(weight, n_heads: int):
@@ -118,7 +142,7 @@ def _shards(model_dir: Path) -> list[Path]:
 def map_key(hf_key: str, converter: str) -> str | None:
     """ExecuTorch name for an HF tensor, None for ignorable buffers, KeyError if unknown."""
     extra, _ = CONVERTERS[converter]
-    top = _LFM2_TOP_KEYS if converter == "lfm2" else _TOP_KEYS
+    top = _LFM2_TOP_KEYS if converter in ("lfm2", "lfm3") else _TOP_KEYS
     if hf_key in top:
         return top[hf_key]
     if _IGNORED.search(hf_key):

@@ -32,6 +32,13 @@ APP_FAMILY_TOKENS = (
 # template for it; the app has had Qwen35Template since, and keeping the refusal meant this
 # repository skipped a family the app can run.
 APP_EXCLUDED = ("vl", "vision", "coder", "guard")
+
+# Families this pipeline exports before the app has a chat template for them. Not part of
+# the Kotlin port: the app reads these names as no family at all and refuses the file
+# (PromptTemplates.forModel returns null, loudly), so a published file waits for the
+# template without breaking anything. Each needs its own exporter support first; LFM3 has
+# pipeline/lfm3_model.py.
+AHEAD_OF_APP = ("lfm3",)
 _KEPT_PUNCTUATION = "-_."
 _SIZE_HINT = re.compile(r"(?<![A-Za-z0-9.])\d+(\.\d+)?[BM](?![A-Za-z0-9])", re.IGNORECASE)
 
@@ -52,6 +59,22 @@ def app_family(name: str) -> str | None:
         if token in n:
             return token
     return None
+
+
+def pipeline_family(name: str) -> str | None:
+    """The app's family for ``name``, or a family exported ahead of its template."""
+    token = app_family(name)
+    if token is not None:
+        return token
+    n = normalise(name)
+    if any(excluded in n for excluded in APP_EXCLUDED):
+        return None
+    return next((token for token in AHEAD_OF_APP if token in n), None)
+
+
+def ahead_of_app(name: str) -> bool:
+    """A family this pipeline exports but the app has no chat template for yet."""
+    return app_family(name) is None and pipeline_family(name) is not None
 
 
 def app_backend(text: str) -> str:
@@ -166,7 +189,7 @@ def check_app_rules(repo_id: str, weights_path: str, backend: str) -> list[str]:
     if detected != expected:
         problems.append(f"{repo_id}/{weights_path} reads as backend {detected!r}, not {expected!r}")
     installed = app_model_name(repo_id, weights_path)
-    if app_family(installed) is None:
+    if pipeline_family(installed) is None:
         problems.append(f"installed name {installed!r} matches no chat template the app knows")
     if app_size_hint(repo_name) is None:
         problems.append(f"repo name {repo_name!r} carries no size hint like 1.7B")

@@ -49,10 +49,20 @@ class Architecture:
     # the export peak enough to refuse a window that fits, and the masks are the dominant
     # term at 32k.
     attention_layers: int | None = None
+    # Of those, how many attend over a fixed window and keep only a ring of keys: LFM3's
+    # five sliding-window layers hold window + one prefill chunk slots at any context
+    # (pipeline/lfm3_model.py RingCache). Zero for every family exported with full caches,
+    # including ones whose config names sliding layers but whose exporter does not ring them.
+    windowed_layers: int = 0
+    window: int = 0
 
     @property
     def attending(self) -> int:
         return self.n_layers if self.attention_layers is None else self.attention_layers
+
+    @property
+    def full_cache_layers(self) -> int:
+        return self.attending - self.windowed_layers
 
     @property
     def embedding_params(self) -> int:
@@ -72,9 +82,28 @@ class Architecture:
         return self.n_layers * (attention + mlp) + self.vocab_size * self.dim
 
 
-def kv_cache_bytes(arch: Architecture, context: int) -> int:
-    """K and V for every attending layer, every KV head, every position, fp32."""
-    return arch.attending * 2 * arch.n_kv_heads * arch.head_dim * context * FP32_BYTES
+# The export's prefill chunk (max_seq_len) when a caller does not say: pipeline.yaml's
+# export.prefill_chunk. Only a windowed layer's ring depends on it.
+PREFILL_CHUNK = 2048
+
+
+def kv_bytes_per_token(arch: Architecture) -> int:
+    """What one more token of window costs: K and V in every layer with a full-length cache."""
+    return arch.full_cache_layers * 2 * arch.n_kv_heads * arch.head_dim * FP32_BYTES
+
+
+def kv_ring_bytes(arch: Architecture, context: int, prefill_chunk: int = PREFILL_CHUNK) -> int:
+    """K and V in the windowed layers' rings: window + max_seq_len slots, whatever the window."""
+    if not arch.windowed_layers:
+        return 0
+    slots = arch.window + min(prefill_chunk, context)
+    return arch.windowed_layers * 2 * arch.n_kv_heads * arch.head_dim * slots * FP32_BYTES
+
+
+def kv_cache_bytes(arch: Architecture, context: int, prefill_chunk: int = PREFILL_CHUNK) -> int:
+    """K and V for every attending layer and KV head, fp32: every position of the window in a
+    full cache, the ring's slots in a windowed layer."""
+    return kv_bytes_per_token(arch) * context + kv_ring_bytes(arch, context, prefill_chunk)
 
 
 def linear_bytes_per_param(qmode: str) -> float:

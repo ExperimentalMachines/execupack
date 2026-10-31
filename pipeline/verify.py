@@ -82,6 +82,10 @@ def run(out_dir: Path, backend: str, work_dir: Path, gate_reference: Path | None
             tokenizer = AutoTokenizer.from_pretrained(str(src_dir))
             print("==> decision gate")
             verdict = gate.check(reference, gate.measure(pte, out_dir / report["tokenizer"], tokenizer, reference))
+            if report["source"].get("variant") == "base":
+                # Not tool-trained: its first token on a calling row is not a call (LFM3-1.7B-Base
+                # puts a newline there), so the gate tracks fp32 and measures no tool calling.
+                verdict["measures_tool_calling"] = False
             print(
                 f"    fp32 {verdict['fp32_mean']} against the export's {verdict['export_mean']} "
                 f"on {verdict['graded']} rows, same choice on {verdict['agreed']}"
