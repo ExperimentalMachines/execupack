@@ -21,6 +21,23 @@ SIDE_FILES = [
     "README.md",
 ]
 LICENSE_PREFIXES = ("license", "use_policy", "notice")
+# Publishers whose own modeling code the solve may run (trust_remote_code), for a family
+# transformers does not implement: LiquidAI's LFM3. A finetune elsewhere with the same
+# auto_map is refused rather than having its code executed on the runner.
+TRUSTED_REMOTE_CODE_ORGS = ("LiquidAI",)
+
+
+def remote_code_allowed(source: SourceModel) -> bool:
+    """The repo is a trusted publisher's, and every auto_map entry names a module in it.
+
+    A ``repo--module.Class`` entry would make transformers fetch code from another repo,
+    outside the pinned snapshot; those are refused.
+    """
+    auto_map = source.config.get("auto_map") or {}
+    if not auto_map or source.id.split("/", 1)[0] not in TRUSTED_REMOTE_CODE_ORGS:
+        return False
+    refs = [v for value in auto_map.values() for v in (value if isinstance(value, list) else [value]) if v]
+    return all("--" not in ref and "/" not in ref for ref in refs)
 
 
 @dataclass
@@ -141,10 +158,10 @@ def download(
     from huggingface_hub import snapshot_download
 
     patterns = (WEIGHT_PATTERNS if weights else []) + SIDE_FILES + source.license_files + list(extra)
-    if source.config.get("auto_map"):
+    if remote_code_allowed(source):
         # A family transformers does not implement ships its modeling code (LFM3), which the
-        # solve's fp32 teacher loads with trust_remote_code. Only top-level .py files, at the
-        # same pinned revision as the weights; nothing here runs them unless asked to.
+        # solve's fp32 teacher loads with trust_remote_code. Only from a trusted publisher,
+        # at the same pinned revision as the weights; nothing here runs them.
         patterns.append("*.py")
     snapshot_download(
         source.id,

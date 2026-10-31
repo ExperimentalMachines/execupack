@@ -212,9 +212,11 @@ def teacher(src_dir: Path, trust_remote_code: bool = False):
     from transformers import AutoModelForCausalLM
 
     # trust_remote_code only for a family transformers does not implement (LFM3: the
-    # checkpoint's modeling_lfm3.py), downloaded at the pinned revision with the weights.
+    # checkpoint's modeling_lfm3.py) from a trusted publisher (hub.remote_code_allowed),
+    # downloaded at the pinned revision with the weights; local_files_only so nothing else
+    # is fetched while loading it.
     model = AutoModelForCausalLM.from_pretrained(
-        str(src_dir), dtype=torch.float32, trust_remote_code=trust_remote_code
+        str(src_dir), dtype=torch.float32, trust_remote_code=trust_remote_code, local_files_only=True
     ).eval()
     # Several families set eos_token_id to a list of stop tokens. generate() takes a list
     # there but pad_token_id has to be one integer, so the first is the one to pad with.
@@ -372,6 +374,10 @@ def run(
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(str(src_dir))
+    if plan.lfm3 and not hub.remote_code_allowed(source):
+        raise ExportError(
+            f"{model_id} needs its own modeling code, which only {hub.TRUSTED_REMOTE_CODE_ORGS} repos may run here"
+        )
     fp32, generate = teacher(src_dir, trust_remote_code=plan.lfm3)
     rows = calibration.sequences(generate, tokenizer)
     # While the unquantised model is still loaded: what it would decide on the gate's

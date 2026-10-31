@@ -156,3 +156,14 @@ def test_rope_tables_leave_the_tail_unrotated():
     # 32 rotated frequencies from the full 128-dim progression, then 32 at zero.
     assert torch.all(cos[:, 32:] == 1) and torch.all(sin[:, 32:] == 0)
     assert torch.isclose(sin[1, 1], torch.sin(torch.tensor(1e6 ** (-2 / 128))))
+
+
+def test_remote_code_runs_only_for_a_trusted_publisher_and_local_modules():
+    from pipeline import hub
+
+    official = make_source("LiquidAI/LFM3-1.7B", lfm3_config(), total_params=LFM3_PARAMS)
+    assert hub.remote_code_allowed(official)
+    finetune = make_source("someone/LFM3-1.7B-finetune", lfm3_config(), total_params=LFM3_PARAMS)
+    assert not hub.remote_code_allowed(finetune)
+    elsewhere = lfm3_config(auto_map={"AutoModelForCausalLM": "other/repo--modeling_lfm3.Lfm3ForCausalLM"})
+    assert not hub.remote_code_allowed(make_source("LiquidAI/LFM3-1.7B", elsewhere, total_params=LFM3_PARAMS))
