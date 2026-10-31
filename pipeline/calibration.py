@@ -265,10 +265,17 @@ def render(tokenizer, prompt: str) -> str:
     )
 
 
-def render_app(tokenizer, user_turn: str) -> str:
-    """The same, under the app's system text, tool schema and opening exchange."""
+def render_app(tokenizer, user_turn: str, thinking: bool = True) -> str:
+    """The same, under the app's system text, tool schema and opening exchange.
+
+    ``thinking=False`` asks a reasoning template to close its think block in the generation
+    prompt (``enable_thinking``, which Qwen3's and LFM3's templates read and the others
+    ignore), so the next token is the answer or the tool call itself. Calibration leaves it
+    at the template's default and renders exactly as before.
+    """
     messages = [{"role": "system", "content": APP_SYSTEM}, *APP_PRIMER, {"role": "user", "content": user_turn}]
-    return tokenizer.apply_chat_template(messages, tools=APP_TOOLS, tokenize=False, add_generation_prompt=True)
+    extra = {} if thinking else {"enable_thinking": False}
+    return tokenizer.apply_chat_template(messages, tools=APP_TOOLS, tokenize=False, add_generation_prompt=True, **extra)
 
 
 def app_head(tokenizer) -> str:

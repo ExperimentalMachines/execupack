@@ -85,11 +85,23 @@ QUIET: tuple[str, ...] = (
 
 
 def prompts(tokenizer) -> dict[str, str]:
-    """Every gate question in the app's own prompt, ready for the assistant's turn."""
+    """Every gate question in the app's own prompt, ready for the assistant's turn.
+
+    With the template's reasoning switched off. The gate reads one token, so that token has
+    to be the decision, and a reasoning model's first token is not: Qwen3's template lets it
+    open ``<think>``, which every published Qwen3 gate graded at 0.9999 on every row, and
+    LFM3's opens the block itself, leaving the first word of the reasoning ("We", "The"), a
+    near tie that a 4-bit file broke the other way on two quiet rows without calling
+    anything (2026-10-31). With the block closed in the prompt, the next token is the answer
+    or the tool call, for every family; templates without the switch render as before.
+    """
     from pipeline import calibration
 
-    out = {q: calibration.render_app(tokenizer, f"{q}\n\n{calibration.TRAILER.format(subject=s)}") for q, s in SEARCH}
-    out.update({q: calibration.render_app(tokenizer, q) for q in QUIET})
+    def app(turn: str) -> str:
+        return calibration.render_app(tokenizer, turn, thinking=False)
+
+    out = {q: app(f"{q}\n\n{calibration.TRAILER.format(subject=s)}") for q, s in SEARCH}
+    out.update({q: app(q) for q in QUIET})
     return out
 
 
