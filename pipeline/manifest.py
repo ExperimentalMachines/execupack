@@ -164,6 +164,13 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         f"ExecuTorch {reports[0]['toolchain']['executorch']} runtime.",
         "",
     ]
+    if source.get("variant") == "base":
+        # Published only on request (--allow-base): say what it is before anything else.
+        out += [
+            "This is the base checkpoint, a completion model: it continues text and is not trained to "
+            "follow chat turns or call tools. Give it a prefix to continue rather than a chat prompt.",
+            "",
+        ]
     if naming.ahead_of_app(naming.source_name(source["id"])):
         # The app picks the chat template from the name and has none for this family yet, so
         # it refuses these files until it gains one; the card says so instead of implying
@@ -171,7 +178,12 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         out += [
             "The openweights app has no chat template for this model family yet, so it does not "
             "load these files until it gains one. Any ExecuTorch runtime with the LLM runner's "
-            "custom ops runs them today; render prompts with the model's own `chat_template.jinja`.",
+            "custom ops runs them today"
+            + (
+                "."
+                if source.get("variant") == "base"
+                else "; render prompts with the model's own `chat_template.jinja`."
+            ),
             "",
         ]
     if any(r["recipe"].get("converter") == "lfm3" for r in reports):
