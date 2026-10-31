@@ -61,6 +61,25 @@ def test_reaching_for_a_tool_on_quiet_rows_fails():
     assert any("quiet rows" in p for p in verdict["problems"])
 
 
+def test_a_quiet_row_fp32_itself_splits_is_not_graded():
+    # LFM3-1.7B's fp32 answers "Who wrote Pride and Prejudice?" at 0.27; an export that lands
+    # on another token there has not regressed. Undecided quiet rows are left out, as the
+    # undecided calling rows are, and the rest are held to the same rule.
+    ref = reference()
+    undecided = gate.QUIET[2]
+    ref["rows"][undecided]["p"] = 0.27
+    rows = measured(0.80, len(gate.SEARCH))
+    rows[undecided]["top"] = 999
+    other = gate.QUIET[0]
+    verdict = gate.check(ref, rows)
+    assert verdict["passed"] and verdict["quiet_rows"] == len(gate.QUIET) - 1
+    assert verdict["fp32_undecided_quiet_rows"] == [undecided]
+    # Two misses among the confident rows still fail.
+    rows[other]["top"] = 999
+    rows[gate.QUIET[1]]["top"] = 999
+    assert not gate.check(ref, rows)["passed"]
+
+
 def test_a_model_fp32_never_calls_on_is_not_graded_as_a_pass():
     # If fp32 is undecided everywhere, there is nothing to compare against and the gate has
     # to say so. Passing quietly here would wave through every export of that family.

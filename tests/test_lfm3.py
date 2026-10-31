@@ -144,6 +144,11 @@ def test_lfm3_base_is_a_base_checkpoint():
     cfg = settings.load()
     verdict = eligibility.evaluate(make_source("LiquidAI/LFM3-1.7B-Base", lfm3_config(), total_params=LFM3_PARAMS), cfg)
     assert any("base checkpoint" in r for r in verdict.reasons)
+    # Asked for by name, it is exported like the chat model (and still reads as a base).
+    asked = eligibility.evaluate(
+        make_source("LiquidAI/LFM3-1.7B-Base", lfm3_config(), total_params=LFM3_PARAMS), cfg, allow_base=True
+    )
+    assert asked.reasons == [] and asked.variant == "base" and asked.backends["xnnpack"] is None
 
 
 def test_rope_tables_leave_the_tail_unrotated():

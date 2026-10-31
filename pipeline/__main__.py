@@ -8,6 +8,8 @@ import os
 import sys
 from pathlib import Path
 
+ALLOW_BASE = "a base checkpoint asked for by name: publish it although only chat models are by default"
+
 
 def _plan(args) -> int:
     from pipeline import eligibility, families, hub, settings, sizing
@@ -82,7 +84,13 @@ def _solve(args) -> int:
     from pipeline import solve as solve_module
 
     report = solve_module.run(
-        args.model, args.revision, Path(args.out), Path(args.work), damp=args.damp, reference_only=args.reference_only
+        args.model,
+        args.revision,
+        Path(args.out),
+        Path(args.work),
+        damp=args.damp,
+        reference_only=args.reference_only,
+        allow_base=args.allow_base,
     )
     print(json.dumps(report, indent=2))
     return 0
@@ -102,6 +110,7 @@ def _export_xnnpack(args) -> int:
             skip_smoke=args.skip_smoke,
             codes=Path(args.codes) if args.codes else None,
             qmode=args.qmode or None,
+            allow_base=args.allow_base,
         )
     )
 
@@ -425,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
         help="codes.pt from `solve`; without it the int4 weights are rounded to nearest",
     )
     export.add_argument("--qmode", default="", help="recipe: 8da4w (config default) or fp32 (linears not quantized)")
+    export.add_argument("--allow-base", action="store_true", help=ALLOW_BASE)
     export.set_defaults(func=_export_xnnpack)
 
     verify = commands.add_parser("verify", help="smoke-test an exported .pte on a host whose runner works")
@@ -456,6 +466,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="write only the gate's fp32 reference (gate.json), no codes: for a recipe that is not solved",
     )
+    solve.add_argument("--allow-base", action="store_true", help=ALLOW_BASE)
     solve.set_defaults(func=_solve)
 
     vulkan = commands.add_parser("export-vulkan", help="download, convert, export a Vulkan (GPU) .pte")

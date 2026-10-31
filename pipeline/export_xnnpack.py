@@ -196,12 +196,13 @@ def run(
     backend: str = BACKEND,
     codes: Path | None = None,
     qmode: str | None = None,
+    allow_base: bool = False,
 ) -> dict:
     if backend not in BACKEND_CONFIG:
         raise ExportError(f"unknown backend {backend!r}; this exporter builds {sorted(BACKEND_CONFIG)}")
     cfg = settings.load()
     source = hub.fetch(model_id, revision)
-    verdict = eligibility.evaluate(source, cfg)
+    verdict = eligibility.evaluate(source, cfg, allow_base=allow_base)
     if verdict.reasons:
         raise ExportError(f"{model_id} is not eligible: {'; '.join(verdict.reasons)}")
     if verdict.backends[backend] is not None:

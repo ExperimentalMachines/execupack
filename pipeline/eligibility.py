@@ -105,7 +105,9 @@ def name_reasons(model_id: str, settings: Settings) -> list[str]:
     return reasons
 
 
-def evaluate(source: SourceModel, settings: Settings) -> Verdict:
+def evaluate(source: SourceModel, settings: Settings, allow_base: bool = False) -> Verdict:
+    """``allow_base`` admits a base checkpoint someone asked for by name (``--allow-base``);
+    the watcher never passes it, so nothing it finds on its own is published as a base."""
     name = naming.source_name(source.id)
     family = families.family_for(source.config) if source.config else None
     family_key = family.key if family else None
@@ -114,7 +116,7 @@ def evaluate(source: SourceModel, settings: Settings) -> Verdict:
 
     if source.pipeline_tag not in (None, settings.pipeline_tag):
         reasons.append(f"pipeline tag {source.pipeline_tag!r} is not {settings.pipeline_tag!r}")
-    if verdict.variant == "base":
+    if verdict.variant == "base" and not allow_base:
         # Base checkpoints are not published. They have no chat template, so the app -- which
         # renders one from the name and refuses a file it cannot place -- cannot run them,
         # and a completion model in a chat app reads as a broken chat model.

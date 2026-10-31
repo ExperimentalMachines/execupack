@@ -336,7 +336,13 @@ def solve_model(model, rows, damp: float = 0.01, act_quant: bool = True, log=pri
 
 
 def run(
-    model_id: str, revision: str, out: Path, work_dir: Path, damp: float = 0.01, reference_only: bool = False
+    model_id: str,
+    revision: str,
+    out: Path,
+    work_dir: Path,
+    damp: float = 0.01,
+    reference_only: bool = False,
+    allow_base: bool = False,
 ) -> dict:
     """Solve one model's int4 codes and write them to ``out``.
 
@@ -351,7 +357,7 @@ def run(
 
     cfg = settings.load()
     source = hub.fetch(model_id, revision)
-    verdict = eligibility.evaluate(source, cfg)
+    verdict = eligibility.evaluate(source, cfg, allow_base=allow_base)
     if verdict.reasons:
         raise ExportError(f"{model_id} is not eligible: {'; '.join(verdict.reasons)}")
     if verdict.backends["xnnpack"] is not None:
