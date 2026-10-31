@@ -138,7 +138,9 @@ def dequantise(codes, scales, group: int = GROUP):
     )
 
 
-def eager_model(model_class: str, params: dict, checkpoint: Path, work_dir: Path, max_seq_len: int = 2048):
+def eager_model(
+    model_class: str, params: dict, checkpoint: Path, work_dir: Path, max_seq_len: int = 2048, lfm3: bool = False
+):
     """The module ``export_llm`` traces, in fp32 with no KV cache.
 
     Built through the same entry point the exporter uses, so the linears solved here are the
@@ -156,6 +158,12 @@ def eager_model(model_class: str, params: dict, checkpoint: Path, work_dir: Path
 
         lfm2_state.apply()
 
+    if lfm3:
+        # The definition the export applies too (pipeline/lfm3_model.py); the solve has to
+        # solve the linears of the module that is lowered later.
+        from pipeline import lfm3_model
+
+        lfm3_model.apply()
     params_path = work_dir / "solve-params.json"
     params_path.write_text(json.dumps(params))
     cfg = LlmConfig()
@@ -190,7 +198,7 @@ def int4_linears(model) -> dict:
     return found
 
 
-def teacher(src_dir: Path):
+def teacher(src_dir: Path, trust_remote_code: bool = False):
     """The fp32 Hugging Face model as a greedy continuation function, and the model itself.
 
     The replies are what GPTQ is asked to protect, so they come from the unquantised model,
@@ -203,7 +211,11 @@ def teacher(src_dir: Path):
     import torch
     from transformers import AutoModelForCausalLM
 
-    model = AutoModelForCausalLM.from_pretrained(str(src_dir), dtype=torch.float32).eval()
+    # trust_remote_code only for a family transformers does not implement (LFM3: the
+    # checkpoint's modeling_lfm3.py), downloaded at the pinned revision with the weights.
+    model = AutoModelForCausalLM.from_pretrained(
+        str(src_dir), dtype=torch.float32, trust_remote_code=trust_remote_code
+    ).eval()
     # Several families set eos_token_id to a list of stop tokens. generate() takes a list
     # there but pad_token_id has to be one integer, so the first is the one to pad with.
     eos = model.config.eos_token_id
@@ -360,7 +372,7 @@ def run(
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(str(src_dir))
-    fp32, generate = teacher(src_dir)
+    fp32, generate = teacher(src_dir, trust_remote_code=plan.lfm3)
     rows = calibration.sequences(generate, tokenizer)
     # While the unquantised model is still loaded: what it would decide on the gate's
     # prompts, which is what the exported file has to agree with before anything publishes.
@@ -383,7 +395,7 @@ def run(
         }
 
     print("==> building the eager model")
-    model = eager_model(plan.model_class, plan.params, checkpoint, work_dir)
+    model = eager_model(plan.model_class, plan.params, checkpoint, work_dir, lfm3=plan.lfm3)
 
     print(f"==> solving {len(int4_linears(model))} linears")
     started = time.time()

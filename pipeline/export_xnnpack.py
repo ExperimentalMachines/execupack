@@ -75,7 +75,7 @@ def export_llm_config(
     backend: str = BACKEND,
 ) -> dict:
     extra = {}
-    if plan.model_class.startswith("lfm2"):
+    if plan.state_reset_at_zero:
         # Set only when the export applies the state fix, because the app reads it to decide
         # whether it can keep its cheap reset or must reopen the file between prompts.
         extra["get_state_reset_at_zero"] = 1
@@ -286,14 +286,21 @@ def run(
     # LFM2 needs its short-convolution state cleared in the graph, and solved codes need to
     # replace torchao's rounding; either sends the export through the wrapper, which is the
     # same export_llm with those two patches applied inside the subprocess.
-    state_fix = plan.model_class.startswith("lfm2")
-    if codes is not None or state_fix:
+    # LFM3's model is this repository's (pipeline/lfm3_model.py), so its export always goes
+    # through the wrapper too; its convolution clears its own state at position zero.
+    state_fix = plan.converter == "lfm2"
+    if codes is not None or state_fix or plan.lfm3:
         command = [sys.executable, "-m", "pipeline.export_with_codes", "--config", str(config_path)]
         if codes is not None:
             command += ["--codes", str(codes)]
         if state_fix:
             command += ["--lfm2-state-fix"]
-        print(f"==> export_llm (codes: {'gptq' if codes else 'round to nearest'}, state fix: {state_fix})")
+        if plan.lfm3:
+            command += ["--lfm3"]
+        print(
+            f"==> export_llm (codes: {'gptq' if codes else 'round to nearest'}, state fix: {state_fix}, "
+            f"lfm3: {plan.lfm3})"
+        )
     else:
         command = [sys.executable, "-m", "executorch.extension.llm.export.export_llm", "--config", str(config_path)]
         print("==> export_llm")

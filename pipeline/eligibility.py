@@ -20,6 +20,8 @@ FAMILY_APP_TOKENS = {
     # class but reads as no app family at all, so it is refused below rather than exported
     # into a file the app cannot render.
     "lfm2": {"lfm25"},
+    # Ahead of the app (naming.AHEAD_OF_APP): it has no LFM3 template yet.
+    "lfm3": {"lfm3"},
 }
 # What a release of each family is called. The architecture class alone is not enough: a
 # later generation can keep the class (a text-only "Qwen3.8" on Qwen3ForCausalLM would pass
@@ -28,6 +30,7 @@ FAMILY_NAME_PATTERNS = {
     "qwen3": re.compile(r"qwen3(?![.\d])", re.IGNORECASE),
     "qwen2_5": re.compile(r"qwen2\.5(?![.\d])", re.IGNORECASE),
     "lfm2": re.compile(r"lfm2\.5(?![.\d])", re.IGNORECASE),
+    "lfm3": re.compile(r"lfm3(?![.\d])", re.IGNORECASE),
     "llama": re.compile(r"llama-?3\.2(?![.\d])|smollm2(?!\d)", re.IGNORECASE),
     "gemma3": re.compile(r"gemma-?3(?![.\dn])", re.IGNORECASE),
     "smollm3": re.compile(r"smollm3(?!\d)", re.IGNORECASE),
@@ -37,7 +40,7 @@ _INSTRUCT_TOKENS = {"instruct", "it", "chat"}
 # Qwen3 does this throughout. LFM2.5 does it unevenly: the 1.2B is LFM2.5-1.2B-Instruct
 # against LFM2.5-1.2B-Base, but the 2.6B is plain LFM2.5-2.6B against LFM2.5-2.6B-Base, so
 # reading the bare name as a base model gets that one backwards.
-_CHAT_WITHOUT_A_SUFFIX = {"qwen3", "lfm2"}
+_CHAT_WITHOUT_A_SUFFIX = {"qwen3", "lfm2", "lfm3"}
 
 
 @dataclass
@@ -97,7 +100,7 @@ def name_reasons(model_id: str, settings: Settings) -> list[str]:
     elif nominal > settings.max_nominal_billions:
         reasons.append(f"named size {nominal:g}B is above {settings.max_nominal_billions:g}B")
     output_repo = naming.output_repo(model_id, settings.hub_org, settings.repo_suffix)
-    if naming.app_family(naming.app_model_name(output_repo, "x.pte")) is None:
+    if naming.pipeline_family(naming.app_model_name(output_repo, "x.pte")) is None:
         reasons.append(f"the app has no chat template for {name!r} (or refuses it by name)")
     return reasons
 
@@ -131,7 +134,7 @@ def evaluate(source: SourceModel, settings: Settings) -> Verdict:
         reasons.append(f"{source.total_params:,} parameters is not below {settings.max_params:,}")
 
     output_repo = naming.output_repo(source.id, settings.hub_org, settings.repo_suffix)
-    app_token = naming.app_family(naming.app_model_name(output_repo, "x.pte"))
+    app_token = naming.pipeline_family(naming.app_model_name(output_repo, "x.pte"))
     if family is not None and app_token is None:
         # The app reads the chat template from the name, so a file it cannot place is a file
         # it refuses to load after the download. LFM2 without the .5 is the live case.

@@ -6,8 +6,11 @@ torchao==0.18.0
 executorch==1.5.1
 pytorch-tokenizers==1.5.0
 # executorch.extension.llm.runner imports transformers at package import time; the smoke
-# test needs that package for TextLLMRunner.
-transformers==5.17.0
+# test needs that package for TextLLMRunner. 5.22.1, not 5.17.0: LFM3 has no transformers
+# implementation, and its remote code (configuration_lfm3.py) fails to load under 5.17.0,
+# where standardize_rope_params looks up a RoPE block for every layer type, "conv" included
+# (KeyError: 'conv'). 5.22.1 loads it, and pipeline/lfm3_model.py matches it on fp32 logits.
+transformers==5.22.1
 huggingface_hub==1.31.0
 safetensors==0.8.0
 jinja2==3.1.6

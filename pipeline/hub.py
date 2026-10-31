@@ -141,6 +141,11 @@ def download(
     from huggingface_hub import snapshot_download
 
     patterns = (WEIGHT_PATTERNS if weights else []) + SIDE_FILES + source.license_files + list(extra)
+    if source.config.get("auto_map"):
+        # A family transformers does not implement ships its modeling code (LFM3), which the
+        # solve's fp32 teacher loads with trust_remote_code. Only top-level .py files, at the
+        # same pinned revision as the weights; nothing here runs them unless asked to.
+        patterns.append("*.py")
     snapshot_download(
         source.id,
         revision=source.sha,
