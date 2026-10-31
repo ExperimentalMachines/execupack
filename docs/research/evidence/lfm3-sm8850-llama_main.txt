@@ -1,0 +1,29 @@
+LFM3 on a Snapdragon 8 Elite Gen 5 (SM8850) QRD, Android 16, Qualcomm Device Cloud, 2026-10-31.
+Runner: ExecuTorch llama_main for Android arm64 (NDK 27.3, XNNPACK), built from main 98755608277f;
+llama_main_fixed adds the prefill-chunk change (chunks of the forward bound, 2047, instead of get_max_seq_len 2048).
+Files: experimentalmachines/LFM3-1.7B-ExecuTorch and -Base-ExecuTorch as published (8da4w GPTQ). Greedy (temperature 0).
+
+== llama_main_fixed, LFM3-1.7B-8da4w-gptq-32k.pte, prompts/needle_nothink.txt (code on line 1, ~5.8k tokens of filler, question at the end)
+executorch:llm_runner_helper.cpp:137] Metadata: get_max_context_len = 32768
+executorch:llm_runner_helper.cpp:196] Prefill chunk size 2047: forward accepts at most 2047 tokens per call, get_max_seq_len is 2048
+executorch:text_llm_runner.cpp:92] RSS after loading model: 2619.511719 MiB (0 if unsupported)
+executorch:text_llm_runner.cpp:208] Max new tokens resolved: 30, given pos_ 5870, num_prompt_tokens 5870, max_context_len 32768
+481I 00:00:20.473049 executorch:text_llm_runner.cpp:231] RSS after prompt prefill: 2619.511719 MiB (0 if unsupported)
+executorch:text_llm_runner.cpp:261] RSS after finishing text generation: 2619.511719 MiB (0 if unsupported)
+executorch:stats.h:179] 	Prompt Tokens: 5870    Generated Tokens: 2
+executorch:stats.h:203] 		Prompt evaluation:	19.149000 (seconds)		 Rate: 	306.543423 (tokens/second)
+executorch:stats.h:215] 		Generated 2 tokens:	0.077000 (seconds)		 Rate: 	25.974026 (tokens/second)
+output: '4817<|im_end|>'
+
+== llama_main (stock), same 32k file and prompt
+E executorch:tensor_impl.cpp:161] Attempted to resize a bounded tensor with a maximum capacity of 2047 elements to 2048 elements.
+(the upstream prefill-chunk bound bug, every export_llm release 1.1.0-1.5.1; not LFM3's)
+
+== llama_main (stock), LFM3-1.7B-8da4w-gptq-2k.pte
+chat prompt, thinking on, 22 tokens -> "...</think>Paris<|im_end|>"; prefill 255.8 tok/s, decode 43.1 tok/s, RSS 1869.5 MiB
+app prompt with tools, "What is Concord the capital of?" + trailer, thinking off, 560 tokens ->
+  "<tool_call>\n<function=web_search>\n<parameter=query>\nConcord capital of\n</parameter>\n</function>\n</tool_call><|im_end|>"; prefill 391.6 tok/s, decode 37.1 tok/s
+app prompt with tools, "What is the capital of Norway?", thinking off, 533 tokens -> "...The capital of Norway is **Oslo**.<|im_end|>" (no call); prefill 369.1 tok/s, decode 40.1 tok/s
+
+== llama_main (stock), LFM3-1.7B-Base-8da4w-gptq-2k.pte
+"<|startoftext|>The capital of France is" -> " Paris. The capital of Japan is Tokyo. The capital of Brazil is Brasília. ..."; decode 42.9 tok/s, RSS 1869.5 MiB
