@@ -167,3 +167,67 @@ def test_remote_code_runs_only_for_a_trusted_publisher_and_local_modules():
     assert not hub.remote_code_allowed(finetune)
     elsewhere = lfm3_config(auto_map={"AutoModelForCausalLM": "other/repo--modeling_lfm3.Lfm3ForCausalLM"})
     assert not hub.remote_code_allowed(make_source("LiquidAI/LFM3-1.7B", elsewhere, total_params=LFM3_PARAMS))
+
+
+def test_the_windowed_layers_cost_a_fixed_ring_not_the_window():
+    from pipeline import sizing
+
+    arch = families.architecture(lfm3_config(), LFM3_PARAMS)
+    assert (arch.windowed_layers, arch.window, arch.full_cache_layers) == (5, 256, 6)
+    # Six global layers grow with the window: 2 x 4 KV heads x 128 x 4 bytes each.
+    assert sizing.kv_bytes_per_token(arch) == 6 * 2 * 4 * 128 * 4 == 24_576
+    # Five rings of 256 + 2,048 slots, the same at 8k and 32k.
+    assert sizing.kv_ring_bytes(arch, 32768) == sizing.kv_ring_bytes(arch, 8192) == 5 * 2 * 4 * 128 * 2304 * 4
+    assert sizing.kv_cache_bytes(arch, 32768) == 24_576 * 32768 + 47_185_920 == 852_492_288
+
+
+def test_gemma3s_sliding_layers_are_not_sized_as_rings():
+    from conftest import hf_config
+
+    arch = families.architecture(hf_config("google/gemma-3-1b-it"), 999_885_952)
+    assert arch.windowed_layers == 0
+
+
+def test_a_report_sized_with_full_caches_is_corrected_to_the_ring():
+    import dataclasses
+
+    from pipeline import correct, sizing
+
+    cfg = settings.load()
+    arch = families.architecture(lfm3_config(), LFM3_PARAMS)
+    full = dataclasses.replace(arch, windowed_layers=0, window=0)
+    overhead = cfg.runtime_overhead_bytes
+    rows = [
+        {
+            "context": c,
+            "kv_cache_bytes": sizing.kv_cache_bytes(full, c),
+            "device_resident_bytes": sizing.device_resident_bytes(full, c, overhead),
+            "export_peak_bytes": 1,
+            "fits_device": True,
+            "fits_host": True,
+        }
+        for c in (32768, 2048)
+    ]
+    report = {
+        "backend": "xnnpack",
+        "files": [{"path": "xnnpack/LFM3-1.7B-8da4w-gptq-32k.pte"}],
+        "recipe": {"qmode": "8da4w-gptq", "prefill_chunk": 2048},
+        "window": {
+            "context": 32768,
+            "kv_cache_bytes_per_token": 45_056,
+            "device_resident_bytes": rows[0]["device_resident_bytes"],
+            "phone_budget_bytes": cfg.device_budget_bytes,
+            "fits_phone_budget": True,
+            "table": rows,
+        },
+    }
+    new = correct.corrected_kv(report, arch, cfg, "abc1234", "2026-10-31")
+    assert new["window"]["kv_cache_bytes_per_token"] == 24_576
+    assert new["window"]["kv_cache_ring_bytes"] == 47_185_920
+    saved = report["window"]["device_resident_bytes"] - new["window"]["device_resident_bytes"]
+    assert saved == 1_476_395_008 - 852_492_288
+    assert new["window"]["table"][0]["kv_cache_bytes"] == 852_492_288
+    assert new["window"]["table"][0]["export_peak_bytes"] == 1  # the build's own estimate stays
+    assert new["corrections"][-1]["fields"] == list(correct.KV_FIELDS)
+    # Already corrected: nothing more to do.
+    assert correct.corrected_kv(new, arch, cfg, "abc1234", "2026-10-31") is None

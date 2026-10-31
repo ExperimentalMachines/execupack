@@ -231,10 +231,16 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         kv = r["window"].get("kv_cache_bytes_per_token")
         if kv:
             ctx = r["window"]["context"]
+            ring = r["window"].get("kv_cache_ring_bytes") or 0
+            whole = (
+                f"{kv * ctx + ring:,} bytes for the whole window ({ring:,} of them the sliding-window "
+                "layers' fixed ring)"
+                if ring
+                else f"{kv * ctx:,} bytes for the whole window"
+            )
             out.append(
                 f"- {BACKEND_TITLES[r['backend']]} at {ctx:,} tokens: the KV cache costs {kv:,} bytes per "
-                f"token (fp32), {kv * ctx:,} bytes for the whole window, allocated in full when the "
-                "model loads."
+                f"token (fp32), {whole}, allocated in full when the model loads."
             )
     out += ["", "## How it was made", ""]
     described = set()

@@ -348,7 +348,8 @@ def run(
         )
         print(f"    reply: {smoke_result['reply']!r}")
 
-    kv_per_token = sizing.kv_cache_bytes(arch, 1)
+    kv_per_token = sizing.kv_bytes_per_token(arch)
+    kv_ring = sizing.kv_ring_bytes(arch, window, cfg.prefill_chunk)
     report = {
         "backend": backend,
         "target": None,
@@ -368,6 +369,8 @@ def run(
             "context": window,
             "reason": window_reason,
             "kv_cache_bytes_per_token": kv_per_token,
+            # A windowed layer's ring, the same size at every window (LFM3); 0 otherwise.
+            "kv_cache_ring_bytes": kv_ring,
             "device_resident_bytes": resident,
             "phone_budget_bytes": cfg.device_budget_bytes,
             "fits_phone_budget": resident <= cfg.device_budget_bytes,

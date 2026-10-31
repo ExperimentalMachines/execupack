@@ -271,7 +271,17 @@ def architecture(config: dict, total_params: int) -> Architecture:
         # transformers' PretrainedConfig default, the same one convert.py assumes.
         tied_embeddings=bool(c.get("tie_word_embeddings", True)),
         attention_layers=attending_layers(c),
+        # Only LFM3's exporter keeps its windowed layers in a ring (pipeline/lfm3_model.py);
+        # Gemma 3's configs name sliding layers too, and no path here rings them.
+        **_windowed(c),
     )
+
+
+def _windowed(c: dict) -> dict:
+    if c.get("model_type") != "lfm3":
+        return {}
+    layer_types = c.get("layer_types") or []
+    return {"windowed_layers": layer_types.count("sliding_attention"), "window": int(c.get("sliding_window") or 0)}
 
 
 def attending_layers(c: dict) -> int | None:

@@ -563,7 +563,8 @@ def main(argv: list[str] | None = None) -> int:
     watch.set_defaults(func=_watch)
 
     fix = commands.add_parser(
-        "correct-reports", help="rewrite fp32 reports' recipe and sizing fields on the Hub; never touches a .pte"
+        "correct-reports",
+        help="rewrite fp32 reports' recipe fields and windowed models' KV sizing on the Hub; never touches a .pte",
     )
     fix.add_argument(
         "repos", nargs="+", help="output repos, e.g. experimentalmachines/SmolLM2-360M-Instruct-ExecuTorch"
