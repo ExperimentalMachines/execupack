@@ -128,8 +128,16 @@ def nominal_billions(name: str) -> float | None:
     return number / 1000 if hint.endswith("M") else number
 
 
+# Releases whose own name carries no size. The app reads the size from the name
+# (HubModel.parameterHint) and this pipeline refuses a name without one, so their outputs are
+# named with it, appended: microsoft/Phi-4-mini-instruct is 3,836,021,760 parameters by the
+# Hub's safetensors count and "3.8B" on its own model card.
+SIZED_NAMES = {"microsoft/Phi-4-mini-instruct": "Phi-4-mini-instruct-3.8B"}
+
+
 def source_name(model_id: str) -> str:
-    return model_id.rsplit("/", 1)[-1]
+    """The name outputs are built from: the repo's own, with the size added where it has none."""
+    return SIZED_NAMES.get(model_id) or model_id.rsplit("/", 1)[-1]
 
 
 def output_repo(model_id: str, hub_org: str, suffix: str) -> str:

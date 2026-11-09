@@ -95,6 +95,24 @@ _LFM3_LAYER_KEYS = {
 # as B, C and x stacked on dim 0, and ExecuTorch's ShortConv reads them apart.
 _IN_PROJ = ("conv.in_proj.weight", ("conv.B_proj.weight", "conv.C_proj.weight", "conv.x_proj.weight"))
 SPLIT_THREE = {"lfm2": _IN_PROJ, "lfm3": _IN_PROJ}
+# Phi-4-mini (Phi3ForCausalLM) fuses q, k and v into one projection and the gate and up
+# projections into another; everything else has Llama's names. HF splits them in forward:
+# q, k, v at n_heads * head_dim and n_kv_heads * head_dim rows (Phi3Attention), gate before
+# up in halves (Phi3MLP, gate_up_states.chunk(2, dim=-1)), as ExecuTorch's own
+# examples/models/phi_4_mini/convert_weights.py does. The placeholders below never reach the
+# checkpoint: convert() replaces each with its parts.
+_PHI4_LAYER_KEYS = {
+    "self_attn.qkv_proj.weight": "attention.wqkv.weight",
+    "self_attn.o_proj.weight": "attention.wo.weight",
+    "input_layernorm.weight": "attention_norm.weight",
+    "post_attention_layernorm.weight": "ffn_norm.weight",
+    "mlp.gate_up_proj.weight": "feed_forward.w13.weight",
+    "mlp.down_proj.weight": "feed_forward.w2.weight",
+}
+_PHI4_FUSED = {
+    "attention.wqkv.weight": ("attention.wq.weight", "attention.wk.weight", "attention.wv.weight"),
+    "feed_forward.w13.weight": ("feed_forward.w1.weight", "feed_forward.w3.weight"),
+}
 # Buffers some checkpoints carry that the model recomputes.
 _IGNORED = re.compile(r"(rotary_emb\.inv_freq|\.masked_bias|\.attn\.bias)$")
 
@@ -107,9 +125,11 @@ CONVERTERS = {
     # common one; every layer is a short convolution or an attention block, never both.
     "lfm2": (_LFM2_LAYER_KEYS, False),
     "lfm3": (_LFM3_LAYER_KEYS, False),
+    # HF RoPE (use_hf_rope), so q and k stay in HF's layout.
+    "phi4": (_PHI4_LAYER_KEYS, False),
 }
 # Converters whose per-layer map stands alone instead of extending _LAYER_KEYS.
-_STANDALONE = {"lfm2", "lfm3"}
+_STANDALONE = {"lfm2", "lfm3", "phi4"}
 # A conv layer and an attention layer carry different tensors, so the per-layer count that
 # the other families check cannot apply; LFM2 is checked by total instead.
 _MIXED_LAYERS = {"lfm2", "lfm3"}
@@ -126,6 +146,23 @@ def unpermute(weight, n_heads: int):
         .transpose(1, 2)
         .reshape(out_features, in_features)
     )
+
+
+def _phi4_parts(fused: str, tensor, config: dict) -> tuple:
+    """A fused Phi-4-mini projection cut where HF cuts it, refusing any other shape."""
+    rows, cols = tensor.shape
+    if fused == "feed_forward.w13.weight":
+        hidden = int(config["intermediate_size"])
+        if rows != 2 * hidden:
+            raise ValueError(f"gate_up_proj has {rows} rows, expected 2 x intermediate_size {hidden}")
+        return tensor[:hidden], tensor[hidden:]
+    n_heads = int(config["num_attention_heads"])
+    head_dim = int(config.get("head_dim") or int(config["hidden_size"]) // n_heads)
+    q = n_heads * head_dim
+    kv = int(config.get("num_key_value_heads") or n_heads) * head_dim
+    if rows != q + 2 * kv:
+        raise ValueError(f"qkv_proj has {rows} rows, expected {q} + 2 x {kv}")
+    return tensor[:q], tensor[q : q + kv], tensor[q + kv :]
 
 
 def _shards(model_dir: Path) -> list[Path]:
@@ -183,6 +220,12 @@ def convert(model_dir: Path, output: Path, converter: str, config: dict) -> dict
                     for name, part in zip(split[1], torch.chunk(tensor, 3, dim=0), strict=True):
                         state[head + name] = part
                     continue
+                fused = next((f for f in _PHI4_FUSED if target.endswith(f)), None) if converter == "phi4" else None
+                if fused:
+                    head = target[: -len(fused)]
+                    for name, part in zip(_PHI4_FUSED[fused], _phi4_parts(fused, tensor, config), strict=True):
+                        state[head + name] = part
+                    continue
                 if permute and target.endswith("attention.wq.weight"):
                     tensor = unpermute(tensor, n_heads)
                 elif permute and target.endswith("attention.wk.weight"):
@@ -210,7 +253,9 @@ def convert(model_dir: Path, output: Path, converter: str, config: dict) -> dict
         if not widths or min(widths) < 6:
             raise ValueError(f"a layer is missing tensors: widths {widths}")
     else:
-        expected_per_layer = len(_LAYER_KEYS) + len(CONVERTERS[converter][0])
+        # Phi-4-mini's six HF tensors per layer become Llama's nine.
+        extra = 0 if converter == "phi4" else len(CONVERTERS[converter][0])
+        expected_per_layer = len(_LAYER_KEYS) + extra
         if per_layer != n_layers * expected_per_layer:
             raise ValueError(f"expected {n_layers} layers x {expected_per_layer} tensors, found {per_layer}")
 

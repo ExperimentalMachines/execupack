@@ -23,6 +23,7 @@ TOTAL_PARAMS = {
     "HuggingFaceTB/SmolLM2-360M-Instruct": 361_821_120,
     "Qwen/Qwen3-30B-A3B": 30_532_122_624,
     "google/gemma-3-1b-it": 999_885_952,
+    "microsoft/Phi-4-mini-instruct": 3_836_021_760,
 }
 CONFIG_FILES = {
     "Qwen/Qwen3-0.6B": "qwen3-0.6b",
@@ -33,6 +34,7 @@ CONFIG_FILES = {
     "HuggingFaceTB/SmolLM2-360M-Instruct": "smollm2-360m-instruct",
     "Qwen/Qwen3-30B-A3B": "qwen3-30b-a3b",
     "google/gemma-3-1b-it": "gemma-3-1b-it",
+    "microsoft/Phi-4-mini-instruct": "phi-4-mini-instruct",
 }
 
 

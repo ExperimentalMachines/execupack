@@ -62,6 +62,61 @@ def superseded(path: str, folder: str, label: str) -> bool:
     return window_of(name) == label
 
 
+def require_same_bytes(out_dir: Path, report: dict) -> None:
+    """Every file the report lists is, byte for byte, the file it describes: a verdict is
+    about the bytes it measured, and a .pte rebuilt or replaced after verify is not that file
+    (codex review, 2026-11-09)."""
+    for entry in report["files"]:
+        local = out_dir / entry["path"]
+        if not local.is_file():
+            raise ValueError(f"{entry['path']} is listed in the report but not in {out_dir}")
+        if exporting.sha256(local) != entry.get("sha256"):
+            raise ValueError(f"{entry['path']} is not the file its report describes (sha256 differs)")
+
+
+def require_vouched(report: dict, paths: list[str]) -> None:
+    """Every model file about to be uploaded is one the report lists: an extra or renamed
+    .pte or .bin, in the backend folder or at the repo root, has no verdict and no digest
+    behind it (codex review, rounds five and six)."""
+    listed = {entry["path"] for entry in report["files"]}
+    unvouched = sorted(path for path in paths if path.endswith((".pte", ".bin")) and path not in listed)
+    if unvouched:
+        raise ValueError(f"{unvouched} would be uploaded but are not in the report; nothing vouches for them")
+
+
+def require_publishable(report: dict) -> None:
+    """Refuse a report that has not passed every check its recipe calls for.
+
+    The workflow runs the smoke test in its own job and fails before reaching publish, but
+    publishing is also a command a person can run by hand, against a directory exported with
+    --skip-smoke. Refusing here is what makes "published" mean "ran and answered" rather than
+    "the workflow happened to be wired correctly that day". A report that was gated must have
+    passed it. A GPTQ file always has an fp32 reference to be gated against (the solve writes
+    it), so it must carry a passing gate of its own, or for Vulkan, which the host cannot run,
+    a gate proxy that passed: a GPTQ report with neither is one whose gate never ran or
+    crashed (codex review, 2026-11-09). Any other report with no gate (round-to-nearest
+    Vulkan) is published on its smoke test, as before.
+    """
+    name = report["files"][0]["path"]
+    smoke = report.get("smoke")
+    if smoke is None:
+        raise ValueError(
+            f"{name} has no smoke result: run `python -m pipeline verify` on this directory before publishing it"
+        )
+    if not smoke.get("passed"):
+        raise ValueError(f"{name} failed its smoke test: {'; '.join(smoke.get('problems', []))}")
+    verdict = report.get("gate")
+    if verdict is not None and not verdict.get("passed") and not (verdict.get("override") or {}).get("reason"):
+        raise ValueError(f"{name} failed its decision gate: {'; '.join(verdict.get('problems', []))}")
+    if (report.get("recipe") or {}).get("int4_codes") == "gptq":
+        if report.get("backend") == "vulkan":
+            proxy = (report.get("gate_proxy") or {}).get("gate") or {}
+            if not proxy.get("passed") and not (proxy.get("override") or {}).get("reason"):
+                raise ValueError(f"{name} has GPTQ codes and no passing gate proxy (the XNNPACK file from its codes)")
+        elif verdict is None:
+            raise ValueError(f"{name} has GPTQ codes and no decision gate: verify it with --gate before publishing")
+
+
 def publish_hf(
     out_dir: Path, backend: str, target: str | None = None, context: int | None = None, attempts: int = 6
 ) -> str:
@@ -78,18 +133,7 @@ def publish_hf(
 
     cfg = settings.load()
     report = load_report(out_dir, backend, target, context)
-    # The workflow runs the smoke test in its own job and fails before reaching this, but
-    # publish is also a command a person can run by hand, against a directory exported with
-    # --skip-smoke. Refusing here is what makes "published" mean "ran and answered" rather
-    # than "the workflow happened to be wired correctly that day".
-    smoke = report.get("smoke")
-    if smoke is None:
-        raise ValueError(
-            f"{report['files'][0]['path']} has no smoke result: run `python -m pipeline verify` "
-            "on this directory before publishing it"
-        )
-    if not smoke.get("passed"):
-        raise ValueError(f"{report['files'][0]['path']} failed its smoke test: {'; '.join(smoke.get('problems', []))}")
+    require_publishable(report)
     repo_id = report["output_repo"]
     folder = _folder(backend, target)
     label = naming.window_label(report["window"]["context"])
@@ -104,6 +148,8 @@ def publish_hf(
         # A tokenizer inside any backend folder makes the app stop lending the root one to
         # every other folder (HuggingFaceClient.tokenizerFor), breaking the other backends.
         raise ValueError(f"tokenizer files must stay at the repo root, found {scoped}")
+    require_vouched(report, [*new_paths, *root_files])
+    require_same_bytes(out_dir, report)
 
     hf = hub.api()
     hf.create_repo(repo_id, repo_type="model", exist_ok=True)
@@ -197,11 +243,14 @@ def publish_release(
 ) -> str:
     """Create (or update) a GitHub release with this window's files under the 2 GiB limit."""
     report = load_report(out_dir, backend, target, context)
+    require_publishable(report)
+    require_same_bytes(out_dir, report)
     folder = out_dir / _folder(backend, target)
     tag = release_tag(report)
     label = naming.window_label(report["window"]["context"])
     hf_url = f"https://huggingface.co/{report['output_repo']}"
     candidates = [p for p in sorted(folder.iterdir()) if window_of(p.name) in (None, label)]
+    require_vouched(report, [str(p.relative_to(out_dir)) for p in candidates])
     candidates.append(out_dir / report["tokenizer"])
     assets = [str(p) for p in candidates if p.is_file() and p.stat().st_size < RELEASE_ASSET_LIMIT]
     notes = release_notes(report, hf_url)

@@ -105,3 +105,13 @@ def test_window_label():
     assert naming.window_label(32768) == "32k"
     assert naming.window_label(8192) == "8k"
     assert naming.window_label(3000) == "3000"
+
+
+def test_phi4_mini_is_named_with_its_size_and_reads_as_phi4mini_in_the_app():
+    repo = naming.output_repo("microsoft/Phi-4-mini-instruct", "experimentalmachines", "-ExecuTorch")
+    assert repo == "experimentalmachines/Phi-4-mini-instruct-3.8B-ExecuTorch"
+    for backend in ("xnnpack", "vulkan"):
+        path = f"{backend}/" + naming.cpu_gpu_file("microsoft/Phi-4-mini-instruct", backend, "8da4w-gptq", 4096)
+        assert naming.check_app_rules(repo, path, backend) == []
+        assert naming.app_family(naming.app_model_name(repo, path)) == "phi4mini"
+    assert naming.app_size_hint(repo.split("/")[1]) == "3.8B"

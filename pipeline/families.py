@@ -71,6 +71,13 @@ _LFM2_NO_QNN = "not in ExecuTorch 1.5.1's Qualcomm SUPPORTED_LLM_MODELS registry
 _LFM3_NO_VULKAN = "the Vulkan delegate has no kernel for the short convolution (as for LFM2)"
 _LFM3_NO_QNN = "not in ExecuTorch 1.5.1's Qualcomm SUPPORTED_LLM_MODELS registry"
 _LFM3_NO_MTK = "no LFM3 definition in ExecuTorch 1.5.1's examples/mediatek"
+# Phi-4-mini has upstream paths on both NPUs (Qualcomm's registry entry phi_4_mini, MediaTek's
+# phi.py), neither of which this pipeline has wired or measured yet.
+_PHI4_NO_QNN = "ExecuTorch 1.5.1's Qualcomm registry has phi_4_mini, but execupack has not wired or validated it"
+_PHI4_NO_MTK = (
+    "ExecuTorch 1.5.1's examples/mediatek has phi.py (model_type phi4, where HF says phi3), "
+    "but execupack has not validated its LongRoPE"
+)
 
 FAMILIES: tuple[Family, ...] = (
     Family("qwen3", ("Qwen3ForCausalLM",)),
@@ -96,6 +103,10 @@ FAMILIES: tuple[Family, ...] = (
         ("Gemma3ForCausalLM",),
         {"xnnpack": _NOT_IN_EXPORT_LLM, "vulkan": _NOT_IN_EXPORT_LLM, "mtk": _MTK_GEMMA3},
     ),
+    # Phi-4-mini: Llama's block with fused q/k/v and gate/up projections (pipeline/convert.py
+    # splits them), partial RoPE on 96 of 128 head dims, and LongRoPE. ExecuTorch 1.5.1 builds
+    # it from the same transformer (examples/models/phi_4_mini).
+    Family("phi4_mini", ("Phi3ForCausalLM",), {"qnn": _PHI4_NO_QNN, "mtk": _PHI4_NO_MTK}),
     Family(
         "smollm3",
         ("SmolLM3ForCausalLM",),
@@ -356,6 +367,9 @@ class XnnpackPlan:
     model_class: str
     params: dict
     converter: str  # key into pipeline.convert.CONVERTERS
+    # Bits for the output head's weights in an 8da4w export: 4 like every other linear,
+    # or 8 (per channel) where the int4 head is what costs the model its decisions.
+    output_bits: int = 4
 
     @property
     def lfm3(self) -> bool:
@@ -438,7 +452,71 @@ def xnnpack_plan(family: Family, config: dict) -> XnnpackPlan:
         params.update(use_scaled_rope=True, use_hf_rope=False, attention_qkv_bias=False)
         return XnnpackPlan("llama3_2", params, "llama")
 
+    if family.key == "phi4_mini":
+        return _phi4_mini_plan(c, params)
+
     raise UnsupportedModel(f"no XNNPACK recipe for family {family.key}")
+
+
+def _phi4_mini_plan(c: dict, params: dict) -> XnnpackPlan:
+    """Phi-4-mini's params, as ExecuTorch 1.5.1's examples/models/phi_4_mini/config/config.json
+    spells them, from the checkpoint's own config.
+
+    LongRoPE (rope.hf_precompute_freqs_cis) divides the inverse frequencies by
+    ``short_factor`` or ``long_factor`` and scales cos and sin by ``attention_factor``, which
+    it derives from max over original position embeddings as HF does (1.19 here). HF picks
+    the factor per forward: short while the sequence is at most
+    ``original_max_position_embeddings`` (4096), long beyond. A precomputed table cannot, so
+    ExecuTorch picks once, by the table's length: long when it is over 4096.
+
+    That length is the window -- unless ``ffn_dim_multiplier`` is set, in which case Rope
+    builds the table at twice the window (rope.py, "Sharded checkpoint"), and upstream's own
+    config sets it to 1. A 4k export would then run every prompt on the long factors, which
+    HF only uses past 4096 tokens. The multiplier does nothing else here (model_args reads it
+    only when hidden_dim is unset), so it is dropped: 2k and 4k windows use HF's short
+    factors exactly, and only windows past 4096 -- whose positions the short factors were
+    never trained for -- take the long ones, short prompts included. The gate grades that
+    against fp32 on short prompts, where HF uses the short factors.
+    """
+    _require(c.get("model_type") == "phi3", f"model_type {c.get('model_type')!r} is not phi3")
+    _require(not c.get("attention_bias"), "Phi-4-mini with attention biases is not supported")
+    _require(not c.get("lm_head_bias"), "Phi-4-mini with an lm_head bias is not supported")
+    _require(bool(c.get("tie_word_embeddings")), "Phi-4-mini with untied embeddings is not validated")
+    partial = float(c.get("partial_rotary_factor") or 1.0)
+    _require(partial < 1.0, "full-width RoPE is Phi-3's, not Phi-4-mini's, and is not validated")
+    scaling = rope_scaling(c)
+    kind = (scaling or {}).get("rope_type") or (scaling or {}).get("type")
+    _require(kind == "longrope", f"RoPE scaling {kind!r}; the Phi-4-mini recipe implements longrope")
+    short, long = scaling.get("short_factor"), scaling.get("long_factor")
+    rotary_pairs = int(params["head_dim"] * partial) // 2
+    _require(
+        isinstance(short, list) and isinstance(long, list) and len(short) == len(long) == rotary_pairs,
+        f"LongRoPE factors must be {rotary_pairs} long each",
+    )
+    original = c.get("original_max_position_embeddings") or scaling.get("original_max_position_embeddings")
+    _require(isinstance(original, int) and original > 0, "LongRoPE without original_max_position_embeddings")
+    maximum = int(c["max_position_embeddings"])
+    _require(maximum > original, "max_position_embeddings is not above the original context")
+    params.pop("ffn_dim_multiplier")
+    params.update(
+        use_scaled_rope=False,
+        use_hf_rope=True,
+        attention_qkv_bias=False,
+        partial_rotary_factor=partial,
+        original_max_position_embeddings=original,
+        max_position_embeddings=maximum,
+        rope_scaling_short_factor=[float(f) for f in short],
+        rope_scaling_long_factor=[float(f) for f in long],
+    )
+    if scaling.get("attention_factor") is not None:
+        params["rope_scaling_attention_factor"] = float(scaling["attention_factor"])
+    # The output head stays at 8 bits. Measured 2026-11-09 on the gate's prompts, eager, against
+    # fp32 (scratchpad expt.py): every linear int4 with GPTQ codes kept 7 of 8 tool calls at a
+    # mean of 0.457 against fp32's 0.663 -- the published recipe, and the .pte agreed (0.452) --
+    # while the same with the head left in fp32 kept 8 of 8 at 0.521. Phi-4-mini's head is its
+    # tied 200,064 x 3072 embedding, a sixth of the model, and fp32 itself is unsure on these
+    # rows (0.40 to 0.78), so the head's rounding is enough to tip one.
+    return XnnpackPlan("phi_4_mini", params, "phi4", output_bits=8)
 
 
 def _lfm3_plan(c: dict) -> XnnpackPlan:

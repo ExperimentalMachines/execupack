@@ -138,8 +138,63 @@ def pick_runner(
     return None
 
 
+def check_gate_proxy(path: Path | None, sha: str, window: int, codes_sha256: str, expected: dict) -> dict:
+    """What stands in for a Vulkan file's gate: the XNNPACK report built from the same codes.
+
+    The two delegates run the same torchao linears with the same codes, so the XNNPACK file
+    is the closest measurement of the Vulkan one the host can make. It counts only when it
+    was built the same way: the same source repo and revision, window (LongRoPE picks its
+    factors by window), codes file, toolchain and every recipe field that shapes the weights
+    or the graph (``expected``: model class, converter, params, qmode, group size, embedding
+    quantization, prefill chunk, output head). And only when its own gate passed, or was
+    accepted by an operator with a recorded reason. Anything else would label an ungated file
+    as gated (codex review, 2026-11-09).
+    """
+    if path is None:
+        raise ExportError("a Vulkan export with solved codes needs --gate-proxy, the XNNPACK report that gates it")
+    try:
+        report = json.loads(Path(path).read_text())
+        recipe, verdict = report.get("recipe") or {}, report.get("gate") or {}
+        problems = []
+        if report.get("backend") != "xnnpack":
+            problems.append(f"it is a {report.get('backend')} report")
+        if (report.get("source") or {}).get("id") != expected["source_id"]:
+            problems.append("it was built from another source repo")
+        if (report.get("source") or {}).get("sha") != sha:
+            problems.append("it was built from another source revision")
+        if (report.get("window") or {}).get("context") != window:
+            problems.append(f"its window is {(report.get('window') or {}).get('context')}, not {window}")
+        if recipe.get("codes_sha256") != codes_sha256:
+            problems.append("it was built from other codes")
+        if (report.get("toolchain") or {}).get("executorch") != expected["executorch"]:
+            problems.append("it was built with another ExecuTorch")
+        for key, value in expected["recipe"].items():
+            if recipe.get(key) != value:
+                problems.append(f"its {key} differs")
+        if not verdict.get("passed") and not (verdict.get("override") or {}).get("reason"):
+            problems.append("its decision gate did not pass" if verdict else "it has no decision gate")
+        if problems:
+            raise ExportError(f"gate proxy {path} does not stand for this export: {'; '.join(problems)}")
+        return {
+            "report": Path(path).name,
+            "file": report["files"][0]["path"],
+            "sha256": report["files"][0]["sha256"],
+            "gate": {k: verdict.get(k) for k in ("passed", "graded", "agreed", "fp32_mean", "export_mean", "override")},
+        }
+    except ExportError:
+        raise
+    except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
+        raise ExportError(f"gate proxy {path} could not be read: {error!r}") from error
+
+
 def recipe_fields(
-    recipe, qmode_label: str, solved: bool, backend: str, prefill_chunk: int, executorch: str | None = None
+    recipe,
+    qmode_label: str,
+    solved: bool,
+    backend: str,
+    prefill_chunk: int,
+    executorch: str | None = None,
+    output_bits: int = 4,
 ) -> dict:
     """The report's description of how the weights are stored, true to the recipe built.
 
@@ -169,18 +224,22 @@ def recipe_fields(
                 f"{prefill_chunk}, fp32 KV cache."
             ),
         }
+    head = output_bits == 8
     return {
         **common,
         "group_size": recipe.group_size,
         "int4_codes": "gptq" if solved else "round-to-nearest",
+        **({"output_head": "int8 per channel"} if head else {}),
         "label": (
             f"{qmode_label}-g{recipe.group_size}, int8 embeddings"
             + (", int4 codes solved with GPTQ" if solved else ", int4 codes rounded to nearest")
+            + (", int8 output head" if head else "")
         ),
         "description": (
             f"ExecuTorch {version} `export_llm`: 8-bit dynamic activations "
-            f"and 4-bit weights in groups of {recipe.group_size}, int8 per-channel embeddings, "
-            f"{delegate}, prefill chunk {prefill_chunk}, fp32 KV cache."
+            f"and 4-bit weights in groups of {recipe.group_size}"
+            + (" (the output head 8-bit per channel)" if head else "")
+            + f", int8 per-channel embeddings, {delegate}, prefill chunk {prefill_chunk}, fp32 KV cache."
         ),
     }
 
@@ -197,7 +256,11 @@ def run(
     codes: Path | None = None,
     qmode: str | None = None,
     allow_base: bool = False,
+    gate_proxy: Path | None = None,
 ) -> dict:
+    """``gate_proxy``: for a Vulkan export with solved codes, the XNNPACK export report that
+    gates it, since no Vulkan runtime runs on the host. It must have passed its decision gate
+    on the same source revision, window, codes and output head (check_gate_proxy)."""
     if backend not in BACKEND_CONFIG:
         raise ExportError(f"unknown backend {backend!r}; this exporter builds {sorted(BACKEND_CONFIG)}")
     cfg = settings.load()
@@ -223,7 +286,14 @@ def run(
             raise ExportError("solved codes are int4; a GPTQ run exports 8da4w")
         recipe = dataclasses.replace(recipe, qmode=qmode)
     choice = sizing.choose_context(
-        arch, cfg.context_tiers, cfg.device_budget_bytes, cfg.runtime_overhead_bytes, budget, backend, recipe.qmode
+        arch,
+        cfg.context_tiers,
+        cfg.device_budget_bytes,
+        cfg.runtime_overhead_bytes,
+        budget,
+        backend,
+        recipe.qmode,
+        plan.output_bits if recipe.qmode == "8da4w" else 4,
     )
     # Every tier is exported, one job per window; the app and the benchmarker decide what
     # fits a phone (the estimate goes into the report as fits_phone_budget). Only the host
@@ -246,7 +316,39 @@ def run(
                 f"a {context}-token export needs about {need:,} B with headroom (causal masks alone "
                 f"{sizing.causal_mask_bytes(arch, context):,} B); this host has {budget:,} B"
             )
-    resident = sizing.device_resident_bytes(arch, window, cfg.runtime_overhead_bytes, recipe.qmode)
+    output_bits = plan.output_bits if recipe.qmode == "8da4w" else 4
+    resident = sizing.device_resident_bytes(arch, window, cfg.runtime_overhead_bytes, recipe.qmode, output_bits)
+    codes_sha256 = None
+    if codes is not None:
+        # The export reads the codes from a copy of its own, hashed here: a shared codes.pt
+        # replaced between the hash and the read would otherwise leave the report naming
+        # codes the file was not built from (codex review, 2026-11-09).
+        work_dir.mkdir(parents=True, exist_ok=True)
+        # Absolute: the export's subprocess runs inside work_dir (codex review, round five).
+        private = (work_dir / "codes.pt").resolve()
+        shutil.copyfile(codes, private)
+        codes, codes_sha256 = private, sha256(private)
+    proxy = None
+    if backend == "vulkan" and codes is not None:
+        # Checked before the export, which takes the better part of an hour at 32k.
+        expected = {
+            "source_id": source.id,
+            "executorch": toolchain()["executorch"],
+            "recipe": {
+                "model_class": plan.model_class,
+                "converter": plan.converter,
+                "params": plan.params,
+                "export_llm_qmode": QMODES[recipe.qmode],
+                "embedding_hqq": recipe.embedding_hqq,
+                "embedding_quantize": recipe.embedding_quantize,
+                "group_size": recipe.group_size,
+                "prefill_chunk": min(cfg.prefill_chunk, window),
+                "output_head": "int8 per channel" if output_bits == 8 else None,
+            },
+        }
+        proxy = check_gate_proxy(gate_proxy, source.sha, window, codes_sha256, expected)
+    elif gate_proxy is not None:
+        raise ExportError("a gate proxy stands in for the gate of a Vulkan export with solved codes, and only that")
 
     output_repo = naming.output_repo(model_id, cfg.hub_org, cfg.repo_suffix)
     # The recipe goes in the file name, and a solve is a different recipe from rounding: a
@@ -290,7 +392,8 @@ def run(
     # LFM3's model is this repository's (pipeline/lfm3_model.py), so its export always goes
     # through the wrapper too; its convolution clears its own state at position zero.
     state_fix = plan.converter == "lfm2"
-    if codes is not None or state_fix or plan.lfm3:
+    output_int8 = plan.output_bits == 8 and recipe.qmode == "8da4w"
+    if codes is not None or state_fix or plan.lfm3 or output_int8:
         command = [sys.executable, "-m", "pipeline.export_with_codes", "--config", str(config_path)]
         if codes is not None:
             command += ["--codes", str(codes)]
@@ -298,6 +401,8 @@ def run(
             command += ["--lfm2-state-fix"]
         if plan.lfm3:
             command += ["--lfm3"]
+        if output_int8:
+            command += ["--output-int8"]
         print(
             f"==> export_llm (codes: {'gptq' if codes else 'round to nearest'}, state fix: {state_fix}, "
             f"lfm3: {plan.lfm3})"
@@ -364,7 +469,15 @@ def run(
             "params": plan.params,
             "export_llm_qmode": QMODES[recipe.qmode],
             "embedding_hqq": recipe.embedding_hqq,
-            **recipe_fields(recipe, qmode_label, codes is not None, backend, min(cfg.prefill_chunk, window)),
+            **recipe_fields(
+                recipe,
+                qmode_label,
+                codes is not None,
+                backend,
+                min(cfg.prefill_chunk, window),
+                output_bits=output_bits,
+            ),
+            **({"codes_sha256": codes_sha256} if codes_sha256 else {}),
         },
         "window": {
             "context": window,
@@ -381,7 +494,7 @@ def run(
             {"path": pte_path_in_repo, "bytes": pte.stat().st_size, "sha256": sha256(pte)},
         ],
         "estimates": {
-            "pte_bytes_estimate": sizing.pte_bytes_estimate(arch, window, recipe.qmode),
+            "pte_bytes_estimate": sizing.pte_bytes_estimate(arch, window, recipe.qmode, output_bits),
             "pte_bytes_actual": pte.stat().st_size,
             "export_peak_bytes_estimate": sizing.export_peak_bytes(arch, window),
         },
@@ -396,6 +509,7 @@ def run(
         "conversion": conversion,
         "metadata": method_values,
         "smoke": smoke_result,
+        **({"gate_proxy": proxy} if proxy else {}),
         "run": manifest.run_info(),
     }
     (backend_dir / "config.json").write_text(

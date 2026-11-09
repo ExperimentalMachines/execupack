@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pipeline import families, gate, hub, settings, smoke
+from pipeline import exporting, families, gate, hub, settings, smoke
 from pipeline.exporting import ExportError
 
 
@@ -30,13 +30,37 @@ def reports(out_dir: Path, backend: str) -> list[Path]:
     return found
 
 
-def run(out_dir: Path, backend: str, work_dir: Path, gate_reference: Path | None = None) -> dict:
-    """Run the smoke test for every window in ``out_dir`` and write the results back."""
+def run(
+    out_dir: Path, backend: str, work_dir: Path, gate_reference: Path | None = None, accept_gate: str | None = None
+) -> dict:
+    """Run the smoke test for every window in ``out_dir`` and write the results back.
+
+    ``accept_gate`` is an operator's reason for publishing a file that fails its decision
+    gate. The verdict is kept as measured (``passed`` stays false) and the reason is recorded
+    beside it as ``override``; publish accepts a failed gate only with one. It exists for a
+    model whose fp32 decisions are themselves near ties, so that a 4-bit file cannot keep all
+    of them: Phi-4-mini, 7 of 8 kept, 2026-11-09.
+    """
     results = []
     gates: list[dict] = []
     for path in reports(out_dir, backend):
         report = json.loads(path.read_text())
-        if report.get("smoke") is not None:
+        # Verified already, unless a gate is asked for that this report has not passed: a
+        # first run that passed the smoke test and then failed (or never reached) the gate
+        # leaves a smoke result behind, and skipping on that alone let a second run report
+        # success with nothing gated (codex review, 2026-11-09).
+        recorded = report.get("gate") or {}
+        # A verdict counts only against the reference that produced it: a corrected gate.json
+        # is measured again, not answered with the old verdict (codex review, round six).
+        reference_sha = exporting.sha256(gate_reference) if gate_reference is not None else None
+        same_reference = recorded.get("reference_sha256") == reference_sha
+        gated = gate_reference is None or (
+            same_reference and (recorded.get("passed") or (accept_gate and recorded.get("override")))
+        )
+        # And only while the file is the one that was verified: a rebuilt .pte is a new file.
+        listed = out_dir / report["files"][0]["path"]
+        same = listed.is_file() and exporting.sha256(listed) == report["files"][0].get("sha256")
+        if report.get("smoke") is not None and gated and same:
             print(f"==> {path.name}: already verified, leaving it")
             results.append(report["smoke"])
             continue
@@ -96,6 +120,10 @@ def run(out_dir: Path, backend: str, work_dir: Path, gate_reference: Path | None
                     "the quiet ones, so the gate checked that the export tracks its fp32 model "
                     "and not that it still calls tools"
                 )
+            if not verdict["passed"] and accept_gate:
+                verdict["override"] = {"reason": accept_gate}
+                print(f"    gate failed and accepted by the operator: {accept_gate}")
+            verdict["reference_sha256"] = exporting.sha256(gate_reference)
             report["gate"] = verdict
             gates.append(verdict)
 
@@ -106,7 +134,7 @@ def run(out_dir: Path, backend: str, work_dir: Path, gate_reference: Path | None
     if failed:
         problems = "; ".join(p for r in failed for p in r.get("problems", []))
         raise ExportError(f"smoke test failed: {problems}")
-    regressed = [g for g in gates if not g.get("passed")]
+    regressed = [g for g in gates if not g.get("passed") and not g.get("override")]
     if regressed:
         problems = "; ".join(p for g in regressed for p in g.get("problems", []))
         raise ExportError(f"decision gate failed: {problems}")

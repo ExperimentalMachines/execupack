@@ -60,7 +60,9 @@ def _verify(args) -> int:
 
     try:
         gate = Path(args.gate) if args.gate else None
-        summary = verify_module.run(Path(args.out), args.backend, Path(args.work), gate_reference=gate)
+        summary = verify_module.run(
+            Path(args.out), args.backend, Path(args.work), gate_reference=gate, accept_gate=args.accept_gate
+        )
     except ExportError as error:
         print(f"verify failed: {error}", file=sys.stderr)
         return 2
@@ -126,6 +128,8 @@ def _export_vulkan(args) -> int:
             Path(args.work),
             context=args.context,
             keep_work=args.keep_work,
+            codes=Path(args.codes) if args.codes else None,
+            gate_proxy=Path(args.gate_proxy) if args.gate_proxy else None,
             backend="vulkan",
         )
     )
@@ -446,6 +450,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="gate.json from `solve`: the file must decide like the fp32 model before it publishes",
     )
+    verify.add_argument(
+        "--accept-gate",
+        default=None,
+        metavar="REASON",
+        help="publish even if the gate fails, recording this reason beside the measured verdict",
+    )
     verify.set_defaults(func=_verify)
 
     audit = commands.add_parser("audit", help="gate a file that is already published, without rebuilding it")
@@ -479,6 +489,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     vulkan.add_argument(
         "--keep-work", action="store_true", help="keep the work dir after success (a failure always leaves it)"
+    )
+    # The Vulkan delegate runs the same torchao Int8DynamicActivationIntxWeight linears as
+    # XNNPACK, so the solve's codes go in the same way. There is no Vulkan runtime on the
+    # host to gate the file, so its gate is the XNNPACK file solved from the same codes.
+    vulkan.add_argument(
+        "--codes",
+        default=None,
+        help="codes.pt from `solve`; without it the int4 weights are rounded to nearest",
+    )
+    vulkan.add_argument(
+        "--gate-proxy",
+        default=None,
+        help="with --codes: the XNNPACK export-report-<window>.json from the same codes that passed its gate",
     )
     vulkan.set_defaults(func=_export_vulkan)
 

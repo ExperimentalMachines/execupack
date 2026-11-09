@@ -131,6 +131,17 @@ so the app's `CompiledBackend.of` reads "vulkan". The Linux wheel's runner has n
 kernels and the runner no GPU, so the check is structural (`smoke.structural_check`:
 `forward` delegates to `VulkanBackend`); quality and speed are measured on the devices.
 
+- **GPTQ codes, gated through the XNNPACK twin** (2026-11-09): `export-vulkan --codes
+  <codes.pt> --gate-proxy <xnnpack export-report-<w>.json>` puts the solve's codes into the
+  same torchao linears, as for XNNPACK. With no Vulkan runtime on the host, the XNNPACK file
+  built from the same codes is the gate. `export_xnnpack.check_gate_proxy` accepts it only
+  when it was built the same way: source repo and revision, window, codes sha256,
+  ExecuTorch version, and every recipe field that shapes the graph or the weights. Its own
+  gate must also have passed or been accepted. The proxy is recorded in the Vulkan report,
+  and `publish` refuses a GPTQ Vulkan file without one. Why: round to nearest kept none of
+  Phi-4-mini's 8 graded tool calls (mean 0.05 against fp32's 0.66, measured on an XNNPACK
+  file with the same quantization). The `export-vulkan` workflow does not pass `--codes`
+  yet, so CI's Vulkan files are still round to nearest.
 - **Runners, per window** (2026-10-04): the export peak grows with the window squared (the
   same per-layer causal masks as XNNPACK), so one fixed 8vcpu runner could not carry any 32k
   window of Qwen3, Qwen2.5 or Llama-3.2-3B. The `targets` job runs `export-matrix`, which
@@ -405,6 +416,32 @@ G5, Dimensity 9300+, Exynos 2500; GSM8K, RetrievalQA, IFEval, PopQA, BFCL, Fresh
 | Several context lengths per model | done | one job per window in every export workflow (`contexts` input, default every tier); `publish_hf` keeps sibling windows and merges `variants[]`; the watcher's one dispatch per backend covers the matrix. 32k XNNPACK is out of reach for Qwen3-class models on hosted runners (Known limits) and is recorded as skipped |
 
 ## Known limits
+
+- **Phi-4-mini** (2026-11-09):
+  - **Recipe.** It is export_llm's `phi_4_mini` with execupack's params and converter
+    (fused qkv/gate_up split), and matches transformers' fp32 Phi3ForCausalLM to 0.003 in
+    the logits on the gate's prompts.
+  - **LongRoPE.** It is static per file: ExecuTorch picks the long factors when the RoPE
+    table is longer than 4096. `ffn_dim_multiplier` is dropped from Phi's params, because
+    upstream's 1 doubles the table and would put a 4k file on the long factors. So 8k and
+    larger windows run the long factors from position 0, as llama.cpp does by context
+    size. HF uses them only past 4096 tokens, so short prompts there differ from HF (KL
+    2.1, top token 14 of 16, more tool-eager).
+  - **Quantization.** Its fp32 tool-call decisions are near ties (0.40 to 0.78 on the
+    graded rows). GPTQ int4 kept 7 of 8. The int8 output head (`XnnpackPlan.output_bits`,
+    +0.27 GB) raised the mean but not the count on the .pte.
+  - **Override.** The published files went out through `verify --accept-gate REASON`,
+    which keeps the measured verdict (`passed: false`) beside the operator's reason. The
+    README states the shortfall per window.
+- **The decision gate cannot see a thinking-only model's decision.**
+  Qwen3-4B-Thinking-2507's template opens `<think>` whatever `enable_thinking` says. The
+  gate closes it empty, as the app does with thinking off, but this model reasons anyway:
+  fp32's first token is "Okay" on every row, so `measures_tool_calling` is false. A
+  generation through the reasoning on the published CPU 4k file reached a tool call on 6 of
+  12 search rows within 600 tokens (the rest were still reasoning) and on none of the 4
+  quiet ones.
+- **32k exports of 4B-class models need about 143 GB with headroom**: more than an
+  r7i.4xlarge (123 GiB), within an r7i.8xlarge.
 
 - Export memory grows with the square of the window: every attention layer of ExecuTorch
   1.4.0's transformer builds its own window × window causal mask (not stored in the

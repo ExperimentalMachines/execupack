@@ -1,5 +1,6 @@
 """Publishing one window into a repo that already holds other windows and backends."""
 
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -20,7 +21,14 @@ def report(context, backend="xnnpack", target=None, sha="abcdef0123456789", run=
         "toolchain": {"executorch": "1.4.0"},
         "recipe": {"label": "8da4w-g32, int8 embeddings", "description": "recipe text."},
         "window": {"context": context, "kv_cache_bytes_per_token": 229_376, "fits_phone_budget": context <= 8192},
-        "files": [{"path": f"{folder}/Qwen3-1.7B-8da4w-{label}.pte", "bytes": 1_000 * context, "sha256": "ff"}],
+        # The tests write b"pte" as the file; publish checks the bytes against this.
+        "files": [
+            {
+                "path": f"{folder}/Qwen3-1.7B-8da4w-{label}.pte",
+                "bytes": 1_000 * context,
+                "sha256": hashlib.sha256(b"pte").hexdigest(),
+            }
+        ],
         "metadata": {"get_max_context_len": context, "get_max_seq_len": min(2048, context)},
         "smoke": {"passed": True, "answered": True},
         "run": {"url": run},
@@ -246,3 +254,79 @@ def test_load_report_wants_exactly_one_report(tmp_path):
     with pytest.raises(ValueError, match="pass --context"):
         publish.load_report(tmp_path, "xnnpack")
     assert publish.load_report(tmp_path, "xnnpack", context=8192)["window"]["context"] == 8192
+
+
+def test_a_report_that_failed_its_decision_gate_is_never_published(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    (out / "xnnpack").mkdir(parents=True)
+    (out / "tokenizer.json").write_text("{}")
+    (out / "xnnpack" / "Qwen3-1.7B-8da4w-2k.pte").write_bytes(b"pte")
+    failed = {**report(2048), "gate": {"passed": False, "problems": ["kept fp32's choice on 7 of 8 calling rows"]}}
+    (out / "xnnpack" / "export-report-2k.json").write_text(json.dumps(failed))
+    monkeypatch.setattr(publish.hub, "api", lambda: pytest.fail("reached the Hub"))
+    with pytest.raises(ValueError, match="failed its decision gate: kept fp32's choice on 7 of 8"):
+        publish.publish_hf(out, "xnnpack")
+
+
+def test_a_gptq_file_needs_its_own_gate_or_for_vulkan_a_passing_proxy():
+    gptq = {"int4_codes": "gptq", "label": "x", "description": "x"}
+    cpu = {**report(2048), "recipe": gptq}
+    with pytest.raises(ValueError, match="no decision gate"):
+        publish.require_publishable(cpu)
+    publish.require_publishable({**cpu, "gate": {"passed": True}})
+    gpu = {**report(2048, backend="vulkan"), "recipe": gptq}
+    with pytest.raises(ValueError, match="no passing gate proxy"):
+        publish.require_publishable(gpu)
+    with pytest.raises(ValueError, match="no passing gate proxy"):
+        publish.require_publishable({**gpu, "gate_proxy": {"gate": {"passed": False}}})
+    publish.require_publishable({**gpu, "gate_proxy": {"gate": {"passed": True}}})
+    # Round to nearest has no fp32 reference to be gated against, as before.
+    publish.require_publishable({**report(2048, backend="vulkan"), "recipe": {"int4_codes": "round-to-nearest"}})
+
+
+def test_a_failed_gate_publishes_only_with_an_operators_recorded_reason():
+    gptq = {"int4_codes": "gptq", "label": "x", "description": "x"}
+    failed = {"passed": False, "agreed": 7, "graded": 8, "problems": ["7 of 8"]}
+    cpu = {**report(2048), "recipe": gptq, "gate": failed}
+    with pytest.raises(ValueError, match="failed its decision gate"):
+        publish.require_publishable(cpu)
+    with pytest.raises(ValueError, match="failed its decision gate"):
+        publish.require_publishable({**cpu, "gate": {**failed, "override": {"reason": ""}}})
+    publish.require_publishable({**cpu, "gate": {**failed, "override": {"reason": "fp32 is near a tie"}}})
+    gpu = {**report(2048, backend="vulkan"), "recipe": gptq}
+    publish.require_publishable({**gpu, "gate_proxy": {"gate": {**failed, "override": {"reason": "near a tie"}}}})
+
+
+def test_a_file_that_is_not_the_one_its_report_describes_is_never_published(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    (out / "xnnpack").mkdir(parents=True)
+    (out / "tokenizer.json").write_text("{}")
+    (out / "xnnpack" / "Qwen3-1.7B-8da4w-2k.pte").write_bytes(b"rebuilt after verify")
+    (out / "xnnpack" / "export-report-2k.json").write_text(json.dumps(report(2048)))
+    monkeypatch.setattr(publish.hub, "api", lambda: pytest.fail("reached the Hub"))
+    with pytest.raises(ValueError, match="not the file its report describes"):
+        publish.publish_hf(out, "xnnpack")
+
+
+def test_a_model_file_the_report_does_not_list_is_never_uploaded_from_the_root(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    (out / "xnnpack").mkdir(parents=True)
+    (out / "tokenizer.json").write_text("{}")
+    (out / "stray.pte").write_bytes(b"not verified")
+    (out / "xnnpack" / "Qwen3-1.7B-8da4w-2k.pte").write_bytes(b"pte")
+    (out / "xnnpack" / "export-report-2k.json").write_text(json.dumps(report(2048)))
+    monkeypatch.setattr(publish.hub, "api", lambda: pytest.fail("reached the Hub"))
+    with pytest.raises(ValueError, match="stray.pte.*not in the report"):
+        publish.publish_hf(out, "xnnpack")
+
+
+def test_a_release_never_attaches_a_model_file_its_report_does_not_list(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    (out / "xnnpack").mkdir(parents=True)
+    (out / "tokenizer.json").write_text("{}")
+    (out / "xnnpack" / "Qwen3-1.7B-8da4w-2k.pte").write_bytes(b"pte")
+    (out / "xnnpack" / "renamed.pte").write_bytes(b"not verified")
+    (out / "xnnpack" / "export-report-2k.json").write_text(json.dumps(report(2048)))
+    monkeypatch.setattr(publish.subprocess, "run", lambda *a, **k: pytest.fail("reached gh"))
+    with pytest.raises(ValueError, match="renamed.pte.*not in the report"):
+        publish.publish_release(out, "xnnpack")
