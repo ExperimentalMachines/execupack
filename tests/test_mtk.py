@@ -669,3 +669,17 @@ def test_run_makes_its_paths_absolute_before_anything_else(tmp_path, monkeypatch
         tmp_path / "ex",
         str(tmp_path / "venv/bin/python"),
     )
+
+
+def test_the_runs_copy_never_overlaps_the_scripts_it_copies(tmp_path):
+    # --examples <work>/mediatek made the copy the source itself: rmtree took the scripts
+    # (codex review of #30, round five).
+    work = tmp_path / "work"
+    scripts = work / "mediatek"
+    (scripts / "model_export_scripts").mkdir(parents=True)
+    (scripts / "model_export_scripts" / "gemma.py").write_text("# script\n")
+    with pytest.raises(export_mtk.ExportError, match="overlaps the run's own copy"):
+        export_mtk.private_examples(scripts, work)
+    assert (scripts / "model_export_scripts" / "gemma.py").exists()  # untouched
+    with pytest.raises(export_mtk.ExportError, match="overlaps"):
+        export_mtk.private_examples(tmp_path, work)  # the copy would land inside the scripts

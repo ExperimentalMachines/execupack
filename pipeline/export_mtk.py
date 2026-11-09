@@ -358,6 +358,11 @@ def private_examples(examples_dir: Path, work_dir: Path) -> Path:
     and goes with the work folder.
     """
     run_dir = (work_dir / "mediatek").resolve()
+    source = examples_dir.resolve()
+    # The copy is deleted and rebuilt below, so it may neither be the scripts nor hold them, nor
+    # sit inside them (codex review of #30, round five: --examples <work>/mediatek deleted them).
+    if run_dir == source or source.is_relative_to(run_dir) or run_dir.is_relative_to(source):
+        raise ExportError(f"--examples {source} overlaps the run's own copy at {run_dir}; keep it outside --work")
     shutil.rmtree(run_dir, ignore_errors=True)
     shutil.copytree(examples_dir, run_dir, symlinks=True, ignore=shutil.ignore_patterns("pte", "__pycache__"))
     return run_dir
