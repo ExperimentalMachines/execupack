@@ -62,6 +62,18 @@ def superseded(path: str, folder: str, label: str) -> bool:
     return window_of(name) == label
 
 
+def require_same_bytes(out_dir: Path, report: dict) -> None:
+    """Every file the report lists is, byte for byte, the file it describes: a verdict is
+    about the bytes it measured, and a .pte rebuilt or replaced after verify is not that file
+    (codex review, 2026-11-09)."""
+    for entry in report["files"]:
+        local = out_dir / entry["path"]
+        if not local.is_file():
+            raise ValueError(f"{entry['path']} is listed in the report but not in {out_dir}")
+        if exporting.sha256(local) != entry.get("sha256"):
+            raise ValueError(f"{entry['path']} is not the file its report describes (sha256 differs)")
+
+
 def require_publishable(report: dict) -> None:
     """Refuse a report that has not passed every check its recipe calls for.
 
@@ -126,6 +138,7 @@ def publish_hf(
         # A tokenizer inside any backend folder makes the app stop lending the root one to
         # every other folder (HuggingFaceClient.tokenizerFor), breaking the other backends.
         raise ValueError(f"tokenizer files must stay at the repo root, found {scoped}")
+    require_same_bytes(out_dir, report)
 
     hf = hub.api()
     hf.create_repo(repo_id, repo_type="model", exist_ok=True)
@@ -220,6 +233,7 @@ def publish_release(
     """Create (or update) a GitHub release with this window's files under the 2 GiB limit."""
     report = load_report(out_dir, backend, target, context)
     require_publishable(report)
+    require_same_bytes(out_dir, report)
     folder = out_dir / _folder(backend, target)
     tag = release_tag(report)
     label = naming.window_label(report["window"]["context"])

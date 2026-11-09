@@ -209,13 +209,14 @@ def choose_context(
     host_budget: int | None,
     backend: str = "xnnpack",
     qmode: str = "8da4w",
+    output_bits: int = 4,
 ) -> WindowChoice:
     """Largest tier whose phone residency and host export peak both fit. `qmode` sizes the
     linears: an fp32 file holds them at four bytes a weight, eight times an 8da4w one."""
     rows = []
     chosen = None
     for context in sorted(tiers, reverse=True):
-        resident = device_resident_bytes(arch, context, runtime_overhead, qmode)
+        resident = device_resident_bytes(arch, context, runtime_overhead, qmode, output_bits)
         peak = export_peak_bytes(arch, context)
         fits_device = resident <= device_budget
         fits_host = host_budget is None or host_need_bytes(arch, context, backend) <= host_budget

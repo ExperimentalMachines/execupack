@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pipeline import families, gate, hub, settings, smoke
+from pipeline import exporting, families, gate, hub, settings, smoke
 from pipeline.exporting import ExportError
 
 
@@ -51,7 +51,10 @@ def run(
         # success with nothing gated (codex review, 2026-11-09).
         recorded = report.get("gate") or {}
         gated = gate_reference is None or recorded.get("passed") or (accept_gate and recorded.get("override"))
-        if report.get("smoke") is not None and gated:
+        # And only while the file is the one that was verified: a rebuilt .pte is a new file.
+        listed = out_dir / report["files"][0]["path"]
+        same = listed.is_file() and exporting.sha256(listed) == report["files"][0].get("sha256")
+        if report.get("smoke") is not None and gated and same:
             print(f"==> {path.name}: already verified, leaving it")
             results.append(report["smoke"])
             continue

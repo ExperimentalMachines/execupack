@@ -68,7 +68,7 @@ def quantizer(upstream, codes: dict, output_int8: bool):
     and for ``output_int8`` the output head at int8 per channel rather than int4."""
     import torch
 
-    codes_given = bool(codes)
+    codes_given = bool(codes)  # main() refuses an empty codes file before this
     if output_int8:
         # The head is not int4 here, so its int4 codes have nowhere to go.
         codes = {k: v for k, v in codes.items() if k != "output"}
@@ -157,6 +157,9 @@ def main(argv: list[str] | None = None) -> int:
         # weights_only: the codes file is an artifact passed between CI jobs, and it holds
         # nothing but tensors, so there is no reason to let it unpickle arbitrary objects.
         codes = torch.load(args.codes, map_location="cpu", weights_only=True) if args.codes else {}
+        if args.codes and not codes:
+            # An empty codes file would export every linear rounded under a GPTQ label.
+            raise ValueError(f"{args.codes} holds no codes")
         quantize_module.quantize = quantizer(quantize_module.quantize, codes, args.output_int8)
 
     from executorch.extension.llm.export.export_llm import main as export_llm_main

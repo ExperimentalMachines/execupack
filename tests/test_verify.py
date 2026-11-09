@@ -1,5 +1,6 @@
 """verify decides what still needs checking from the report it finds."""
 
+import hashlib
 import json
 
 import pytest
@@ -17,7 +18,7 @@ def write(tmp_path, report):
     (out / "xnnpack" / "x-2k.pte").write_bytes(b"pte")
     base = {
         "window": {"context": 2048},
-        "files": [{"path": "xnnpack/x-2k.pte"}],
+        "files": [{"path": "xnnpack/x-2k.pte", "sha256": hashlib.sha256(b"pte").hexdigest()}],
         "tokenizer": "tokenizer.json",
         "source": {"id": "org/x", "sha": "0" * 40, "variant": "instruct"},
     }
@@ -88,3 +89,10 @@ def test_an_accepted_gate_keeps_its_measured_verdict_and_records_the_reason(tmp_
     assert summary["passed"]
     saved = json.loads((out / "xnnpack" / "export-report-2k.json").read_text())["gate"]
     assert saved["passed"] is False and saved["override"] == {"reason": "near a tie"}
+
+
+def test_a_verified_report_is_verified_again_when_its_file_was_rebuilt(tmp_path, reaches_smoke):
+    out = write(tmp_path, {"smoke": {"passed": True}, "gate": {"passed": True}})
+    (out / "xnnpack" / "x-2k.pte").write_bytes(b"rebuilt")
+    with pytest.raises(Ran):
+        verify.run(out, "xnnpack", tmp_path / "work")

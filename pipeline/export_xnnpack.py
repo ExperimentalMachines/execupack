@@ -138,50 +138,53 @@ def pick_runner(
     return None
 
 
-def file_sha256(path: Path) -> str:
-    import hashlib
-
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 24), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def check_gate_proxy(path: Path | None, sha: str, window: int, codes_sha256: str, output_bits: int) -> dict:
+def check_gate_proxy(path: Path | None, sha: str, window: int, codes_sha256: str, expected: dict) -> dict:
     """What stands in for a Vulkan file's gate: the XNNPACK report built from the same codes.
 
     The two delegates run the same torchao linears with the same codes, so the XNNPACK file
-    is the closest measurement of the Vulkan one the host can make. It counts only for the
-    same source revision, window (LongRoPE picks its factors by window), codes file and output
-    head, and only when its own gate passed; anything else would label an ungated file as
-    gated (codex review, 2026-11-09).
+    is the closest measurement of the Vulkan one the host can make. It counts only when it
+    was built the same way: the same source repo and revision, window (LongRoPE picks its
+    factors by window), codes file, toolchain and every recipe field that shapes the weights
+    or the graph (``expected``: model class, converter, params, qmode, group size, embedding
+    quantization, prefill chunk, output head). And only when its own gate passed, or was
+    accepted by an operator with a recorded reason. Anything else would label an ungated file
+    as gated (codex review, 2026-11-09).
     """
     if path is None:
         raise ExportError("a Vulkan export with solved codes needs --gate-proxy, the XNNPACK report that gates it")
-    report = json.loads(Path(path).read_text())
-    recipe, verdict = report.get("recipe") or {}, report.get("gate") or {}
-    problems = []
-    if report.get("backend") != "xnnpack":
-        problems.append(f"it is a {report.get('backend')} report")
-    if (report.get("source") or {}).get("sha") != sha:
-        problems.append("it was built from another source revision")
-    if (report.get("window") or {}).get("context") != window:
-        problems.append(f"its window is {(report.get('window') or {}).get('context')}, not {window}")
-    if recipe.get("codes_sha256") != codes_sha256:
-        problems.append("it was built from other codes")
-    if (recipe.get("output_head") == "int8 per channel") != (output_bits == 8):
-        problems.append("its output head differs")
-    if not verdict.get("passed") and not (verdict.get("override") or {}).get("reason"):
-        problems.append("its decision gate did not pass" if verdict else "it has no decision gate")
-    if problems:
-        raise ExportError(f"gate proxy {path} does not stand for this export: {'; '.join(problems)}")
-    return {
-        "report": Path(path).name,
-        "file": report["files"][0]["path"],
-        "sha256": report["files"][0].get("sha256"),
-        "gate": {k: verdict.get(k) for k in ("passed", "graded", "agreed", "fp32_mean", "export_mean", "override")},
-    }
+    try:
+        report = json.loads(Path(path).read_text())
+        recipe, verdict = report.get("recipe") or {}, report.get("gate") or {}
+        problems = []
+        if report.get("backend") != "xnnpack":
+            problems.append(f"it is a {report.get('backend')} report")
+        if (report.get("source") or {}).get("id") != expected["source_id"]:
+            problems.append("it was built from another source repo")
+        if (report.get("source") or {}).get("sha") != sha:
+            problems.append("it was built from another source revision")
+        if (report.get("window") or {}).get("context") != window:
+            problems.append(f"its window is {(report.get('window') or {}).get('context')}, not {window}")
+        if recipe.get("codes_sha256") != codes_sha256:
+            problems.append("it was built from other codes")
+        if (report.get("toolchain") or {}).get("executorch") != expected["executorch"]:
+            problems.append("it was built with another ExecuTorch")
+        for key, value in expected["recipe"].items():
+            if recipe.get(key) != value:
+                problems.append(f"its {key} differs")
+        if not verdict.get("passed") and not (verdict.get("override") or {}).get("reason"):
+            problems.append("its decision gate did not pass" if verdict else "it has no decision gate")
+        if problems:
+            raise ExportError(f"gate proxy {path} does not stand for this export: {'; '.join(problems)}")
+        return {
+            "report": Path(path).name,
+            "file": report["files"][0]["path"],
+            "sha256": report["files"][0]["sha256"],
+            "gate": {k: verdict.get(k) for k in ("passed", "graded", "agreed", "fp32_mean", "export_mean", "override")},
+        }
+    except ExportError:
+        raise
+    except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
+        raise ExportError(f"gate proxy {path} could not be read: {error!r}") from error
 
 
 def recipe_fields(
@@ -283,7 +286,14 @@ def run(
             raise ExportError("solved codes are int4; a GPTQ run exports 8da4w")
         recipe = dataclasses.replace(recipe, qmode=qmode)
     choice = sizing.choose_context(
-        arch, cfg.context_tiers, cfg.device_budget_bytes, cfg.runtime_overhead_bytes, budget, backend, recipe.qmode
+        arch,
+        cfg.context_tiers,
+        cfg.device_budget_bytes,
+        cfg.runtime_overhead_bytes,
+        budget,
+        backend,
+        recipe.qmode,
+        plan.output_bits if recipe.qmode == "8da4w" else 4,
     )
     # Every tier is exported, one job per window; the app and the benchmarker decide what
     # fits a phone (the estimate goes into the report as fits_phone_budget). Only the host
@@ -308,11 +318,34 @@ def run(
             )
     output_bits = plan.output_bits if recipe.qmode == "8da4w" else 4
     resident = sizing.device_resident_bytes(arch, window, cfg.runtime_overhead_bytes, recipe.qmode, output_bits)
-    codes_sha256 = file_sha256(codes) if codes is not None else None
+    codes_sha256 = None
+    if codes is not None:
+        # The export reads the codes from a copy of its own, hashed here: a shared codes.pt
+        # replaced between the hash and the read would otherwise leave the report naming
+        # codes the file was not built from (codex review, 2026-11-09).
+        work_dir.mkdir(parents=True, exist_ok=True)
+        private = work_dir / "codes.pt"
+        shutil.copyfile(codes, private)
+        codes, codes_sha256 = private, sha256(private)
     proxy = None
     if backend == "vulkan" and codes is not None:
         # Checked before the export, which takes the better part of an hour at 32k.
-        proxy = check_gate_proxy(gate_proxy, source.sha, window, codes_sha256, output_bits)
+        expected = {
+            "source_id": source.id,
+            "executorch": toolchain()["executorch"],
+            "recipe": {
+                "model_class": plan.model_class,
+                "converter": plan.converter,
+                "params": plan.params,
+                "export_llm_qmode": QMODES[recipe.qmode],
+                "embedding_hqq": recipe.embedding_hqq,
+                "embedding_quantize": recipe.embedding_quantize,
+                "group_size": recipe.group_size,
+                "prefill_chunk": min(cfg.prefill_chunk, window),
+                "output_head": "int8 per channel" if output_bits == 8 else None,
+            },
+        }
+        proxy = check_gate_proxy(gate_proxy, source.sha, window, codes_sha256, expected)
     elif gate_proxy is not None:
         raise ExportError("a gate proxy stands in for the gate of a Vulkan export with solved codes, and only that")
 

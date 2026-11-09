@@ -112,14 +112,29 @@ def test_an_fp32_report_does_not_claim_int4_weights():
     assert "4-bit weights in groups of" in rtn["description"] and rtn["group_size"] == cfg.xnnpack.group_size
 
 
+RECIPE = {
+    "model_class": "phi_4_mini",
+    "converter": "phi4",
+    "params": {"dim": 3072},
+    "export_llm_qmode": "8da4w",
+    "embedding_hqq": False,
+    "embedding_quantize": "8,0",
+    "group_size": 32,
+    "prefill_chunk": 2048,
+    "output_head": "int8 per channel",
+}
+EXPECTED = {"source_id": "microsoft/Phi-4-mini-instruct", "executorch": "1.5.1", "recipe": RECIPE}
+
+
 def _proxy(tmp_path, **changes):
     import json
 
     report = {
         "backend": "xnnpack",
-        "source": {"sha": "a" * 40},
+        "source": {"id": "microsoft/Phi-4-mini-instruct", "sha": "a" * 40},
+        "toolchain": {"executorch": "1.5.1"},
         "window": {"context": 8192},
-        "recipe": {"codes_sha256": "c0de", "output_head": "int8 per channel"},
+        "recipe": {**RECIPE, "codes_sha256": "c0de"},
         "gate": {"passed": True, "graded": 8, "agreed": 8, "fp32_mean": 0.66, "export_mean": 0.53},
         "files": [{"path": "xnnpack/x-8k.pte", "sha256": "ff"}],
     }
@@ -130,23 +145,39 @@ def _proxy(tmp_path, **changes):
     return path
 
 
-def test_a_gate_proxy_counts_only_for_the_same_revision_window_codes_and_head(tmp_path):
+def test_a_gate_proxy_counts_only_for_the_same_build(tmp_path):
+    import copy
+
     from pipeline import export_xnnpack
 
-    ok = export_xnnpack.check_gate_proxy(_proxy(tmp_path), "a" * 40, 8192, "c0de", 8)
+    ok = export_xnnpack.check_gate_proxy(_proxy(tmp_path), "a" * 40, 8192, "c0de", EXPECTED)
     assert ok["gate"]["passed"] and ok["file"] == "xnnpack/x-8k.pte"
+    four_bit_head = copy.deepcopy(EXPECTED)
+    four_bit_head["recipe"]["output_head"] = None
+    other_repo = {**EXPECTED, "source_id": "microsoft/Phi-4-mini-reasoning"}
+    other_toolchain = {**EXPECTED, "executorch": "1.6.0"}
     for changes, args, match in (
-        ({}, ("b" * 40, 8192, "c0de", 8), "another source revision"),
-        ({}, ("a" * 40, 4096, "c0de", 8), "window is 8192"),
-        ({}, ("a" * 40, 8192, "beef", 8), "other codes"),
-        ({}, ("a" * 40, 8192, "c0de", 4), "output head differs"),
-        ({"gate": {"passed": False}}, ("a" * 40, 8192, "c0de", 8), "did not pass"),
-        ({"backend": "vulkan"}, ("a" * 40, 8192, "c0de", 8), "vulkan report"),
+        ({}, ("b" * 40, 8192, "c0de", EXPECTED), "another source revision"),
+        ({}, ("a" * 40, 4096, "c0de", EXPECTED), "window is 8192"),
+        ({}, ("a" * 40, 8192, "beef", EXPECTED), "other codes"),
+        ({}, ("a" * 40, 8192, "c0de", four_bit_head), "output_head differs"),
+        ({}, ("a" * 40, 8192, "c0de", other_repo), "another source repo"),
+        ({}, ("a" * 40, 8192, "c0de", other_toolchain), "another ExecuTorch"),
+        (
+            {"recipe": {**RECIPE, "codes_sha256": "c0de", "embedding_quantize": "4,32"}},
+            ("a" * 40, 8192, "c0de", EXPECTED),
+            "embedding_quantize differs",
+        ),
+        ({"gate": {"passed": False}}, ("a" * 40, 8192, "c0de", EXPECTED), "did not pass"),
+        ({"backend": "vulkan"}, ("a" * 40, 8192, "c0de", EXPECTED), "vulkan report"),
+        ({"files": []}, ("a" * 40, 8192, "c0de", EXPECTED), "could not be read"),
     ):
         with pytest.raises(export_xnnpack.ExportError, match=match):
             export_xnnpack.check_gate_proxy(_proxy(tmp_path, **changes), *args)
     with pytest.raises(export_xnnpack.ExportError, match="needs --gate-proxy"):
-        export_xnnpack.check_gate_proxy(None, "a" * 40, 8192, "c0de", 8)
+        export_xnnpack.check_gate_proxy(None, "a" * 40, 8192, "c0de", EXPECTED)
+    accepted = {"passed": False, "agreed": 7, "graded": 8, "override": {"reason": "near a tie"}}
+    assert export_xnnpack.check_gate_proxy(_proxy(tmp_path, gate=accepted), "a" * 40, 8192, "c0de", EXPECTED)
 
 
 def test_an_int8_head_is_priced_at_a_byte_a_weight(source):
@@ -156,3 +187,5 @@ def test_an_int8_head_is_priced_at_a_byte_a_weight(source):
     four, eight = sizing.pte_bytes_estimate(arch, 2048), sizing.pte_bytes_estimate(arch, 2048, output_bits=8)
     head = 200_064 * 3072
     assert 0.4 * head < eight - four < 0.5 * head  # (1 - 0.5625) bytes per weight, plus overhead
+    rows = sizing.choose_context(arch, (2048,), 5_000_000_000, 500_000_000, None, output_bits=8).table
+    assert rows[0]["device_resident_bytes"] == sizing.device_resident_bytes(arch, 2048, 500_000_000, output_bits=8)

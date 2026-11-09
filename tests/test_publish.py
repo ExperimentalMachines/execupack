@@ -1,5 +1,6 @@
 """Publishing one window into a repo that already holds other windows and backends."""
 
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -20,7 +21,14 @@ def report(context, backend="xnnpack", target=None, sha="abcdef0123456789", run=
         "toolchain": {"executorch": "1.4.0"},
         "recipe": {"label": "8da4w-g32, int8 embeddings", "description": "recipe text."},
         "window": {"context": context, "kv_cache_bytes_per_token": 229_376, "fits_phone_budget": context <= 8192},
-        "files": [{"path": f"{folder}/Qwen3-1.7B-8da4w-{label}.pte", "bytes": 1_000 * context, "sha256": "ff"}],
+        # The tests write b"pte" as the file; publish checks the bytes against this.
+        "files": [
+            {
+                "path": f"{folder}/Qwen3-1.7B-8da4w-{label}.pte",
+                "bytes": 1_000 * context,
+                "sha256": hashlib.sha256(b"pte").hexdigest(),
+            }
+        ],
         "metadata": {"get_max_context_len": context, "get_max_seq_len": min(2048, context)},
         "smoke": {"passed": True, "answered": True},
         "run": {"url": run},
@@ -287,3 +295,14 @@ def test_a_failed_gate_publishes_only_with_an_operators_recorded_reason():
     publish.require_publishable({**cpu, "gate": {**failed, "override": {"reason": "fp32 is near a tie"}}})
     gpu = {**report(2048, backend="vulkan"), "recipe": gptq}
     publish.require_publishable({**gpu, "gate_proxy": {"gate": {**failed, "override": {"reason": "near a tie"}}}})
+
+
+def test_a_file_that_is_not_the_one_its_report_describes_is_never_published(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    (out / "xnnpack").mkdir(parents=True)
+    (out / "tokenizer.json").write_text("{}")
+    (out / "xnnpack" / "Qwen3-1.7B-8da4w-2k.pte").write_bytes(b"rebuilt after verify")
+    (out / "xnnpack" / "export-report-2k.json").write_text(json.dumps(report(2048)))
+    monkeypatch.setattr(publish.hub, "api", lambda: pytest.fail("reached the Hub"))
+    with pytest.raises(ValueError, match="not the file its report describes"):
+        publish.publish_hf(out, "xnnpack")
