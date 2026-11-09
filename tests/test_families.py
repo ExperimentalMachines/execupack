@@ -217,3 +217,55 @@ def test_one_attention_layer_per_chunk_is_only_for_hybrids():
     # An explicit all-attention layout is still not a hybrid: no chunk per layer for it.
     qwen["layer_types"] = ["full_attention"] * int(qwen["num_hidden_layers"])
     assert families.mtk_chunks_one_attention_each(qwen) is None
+
+
+PHI4 = "microsoft/Phi-4-mini-instruct"
+
+
+def test_phi4_mini_params_equal_executorchs_own_but_the_table_doubling_multiplier():
+    # ExecuTorch's config sets ffn_dim_multiplier 1, which makes Rope build its table at twice
+    # the window and so run a 4k export on LongRoPE's long factors (families._phi4_mini_plan).
+    expected = expected_params("et-phi_4_mini.params.json")
+    expected.pop("ffn_dim_multiplier")
+    plan = plan_for(hf_config(PHI4))
+    assert plan.params == expected
+    assert (plan.model_class, plan.converter) == ("phi_4_mini", "phi4")
+
+
+def test_phi4_mini_shapes_outside_the_validated_one_are_refused():
+    for change, match in (
+        ({"partial_rotary_factor": 1.0}, "full-width RoPE"),
+        ({"tie_word_embeddings": False}, "untied"),
+        ({"rope_scaling": None}, "longrope"),
+        ({"attention_bias": True}, "attention biases"),
+    ):
+        config = copy.deepcopy(hf_config(PHI4))
+        config.update(change)
+        with pytest.raises(families.UnsupportedModel, match=match):
+            plan_for(config)
+    config = copy.deepcopy(hf_config(PHI4))
+    config["rope_scaling"]["long_factor"] = config["rope_scaling"]["long_factor"][:-1]
+    with pytest.raises(families.UnsupportedModel, match="48 long"):
+        plan_for(config)
+
+
+@pytest.mark.parametrize("window, factor", [(2048, "short"), (4096, "short"), (8192, "long"), (32768, "long")])
+def test_phi4_mini_rope_table_takes_hf_short_factors_up_to_4096(window, factor):
+    rope = pytest.importorskip("executorch.examples.models.llama.rope")
+    model_args = pytest.importorskip("executorch.examples.models.llama.model_args")
+    torch = pytest.importorskip("torch")
+    params = plan_for(hf_config(PHI4)).params
+    built = rope.Rope(model_args.ModelArgs(**params, max_context_len=window, max_seq_len=min(window, 2048)))
+    assert built.freqs_cos.shape[0] == window
+    chosen = params[f"rope_scaling_{factor}_factor"]
+    want_cos, _ = rope.hf_precompute_freqs_cis(
+        params["head_dim"],
+        window,
+        params["rope_theta"],
+        params["partial_rotary_factor"],
+        short_factor=chosen,
+        long_factor=chosen,
+        original_max_pos=4096,
+        max_position_embeddings=131072,
+    )
+    assert torch.equal(built.freqs_cos, want_cos)

@@ -94,15 +94,29 @@ def prompts(tokenizer) -> dict[str, str]:
     near tie that a 4-bit file broke the other way on two quiet rows without calling
     anything (2026-10-31). With the block closed in the prompt, the next token is the answer
     or the tool call, for every family; templates without the switch render as before.
+
+    A reasoning-only template has no switch to read: Qwen3-4B-Thinking-2507's ends every
+    generation prompt in an open ``<think>`` whatever ``enable_thinking`` says, which would
+    put the first word of the reasoning back in the graded position. That block is closed
+    here the way Qwen3's own template closes it when the switch is off, and the way the app
+    sends a Qwen3 turn with thinking off (Qwen3Prompt.render, ``<think>\\n\\n</think>\\n\\n``).
     """
     from pipeline import calibration
 
     def app(turn: str) -> str:
-        return calibration.render_app(tokenizer, turn, thinking=False)
+        return close_open_think(calibration.render_app(tokenizer, turn, thinking=False))
 
     out = {q: app(f"{q}\n\n{calibration.TRAILER.format(subject=s)}") for q, s in SEARCH}
     out.update({q: app(q) for q in QUIET})
     return out
+
+
+def close_open_think(text: str) -> str:
+    """``text`` with a think block it leaves open at its very end closed empty."""
+    head = text.rstrip("\n")
+    if head.endswith("<think>"):
+        return head + "\n\n</think>\n\n"
+    return text
 
 
 def reference(model, tokenizer) -> dict:

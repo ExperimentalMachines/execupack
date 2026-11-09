@@ -137,3 +137,64 @@ def test_measuring_gate_records_throughput_and_passes():
     assert result["decode_tok_per_sec"] == 42.12
     assert result["prompt_tokens"] == 16
     assert result["generated_tokens"] == 32
+
+
+class _Template:
+    """A chat template reduced to its generation prompt, as three real families end it."""
+
+    def __init__(self, opener):
+        self.opener = opener
+
+    def apply_chat_template(self, messages, tools=None, tokenize=False, add_generation_prompt=True, **extra):
+        body = "".join(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n" for m in messages)
+        return body + "<|im_start|>assistant\n" + self.opener(extra.get("enable_thinking", True))
+
+
+def test_a_reasoning_only_template_has_its_think_block_closed_like_the_switch_closes_qwen3s():
+    # Qwen3-4B-Thinking-2507 opens the block whatever enable_thinking says; hybrid Qwen3
+    # closes it empty when the switch is off. The gate has to grade both on the decision.
+    thinking_only = gate.prompts(_Template(lambda thinking: "<think>\n"))
+    hybrid = gate.prompts(_Template(lambda thinking: "" if thinking else "<think>\n\n</think>\n\n"))
+    assert thinking_only == hybrid
+    assert all(p.endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n") for p in thinking_only.values())
+
+
+def test_a_template_without_a_think_block_is_graded_as_it_renders():
+    plain = gate.prompts(_Template(lambda thinking: ""))
+    assert all(p.endswith("<|im_start|>assistant\n") for p in plain.values())
+    assert gate.close_open_think("a <think>\nreasoning</think>\n\nanswer") == "a <think>\nreasoning</think>\n\nanswer"
+
+
+# microsoft/Phi-4-mini-instruct's chat_template (tokenizer_config.json, rev cfbefacb), verbatim.
+PHI4_TEMPLATE = (
+    "{% for message in messages %}{% if message['role'] == 'system' and 'tools' in message and "
+    "message['tools'] is not none %}{{ '<|' + message['role'] + '|>' + message['content'] + '<|tool|>' + "
+    "message['tools'] + '<|/tool|>' + '<|end|>' }}{% else %}{{ '<|' + message['role'] + '|>' + "
+    "message['content'] + '<|end|>' }}{% endif %}{% endfor %}{% if add_generation_prompt %}"
+    "{{ '<|assistant|>' }}{% else %}{{ eos_token }}{% endif %}"
+)
+
+
+class _Jinja:
+    """apply_chat_template reduced to rendering the template, as transformers does."""
+
+    def __init__(self, template):
+        import jinja2
+
+        self.chat_template = template
+        self._template = jinja2.Environment().from_string(template)
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True, **extra):
+        return self._template.render(
+            messages=messages, add_generation_prompt=add_generation_prompt, eos_token="", **extra
+        )
+
+
+def test_phi4_mini_gets_the_tool_schema_on_its_system_turn_as_the_app_sends_it():
+    import json
+
+    rendered = gate.prompts(_Jinja(PHI4_TEMPLATE))["What is Concord the capital of?"]
+    # Phi4Prompt.render: the system text, then the tools as one JSON array between markers.
+    head = f"<|system|>{calibration.APP_SYSTEM}<|tool|>{json.dumps(calibration.APP_TOOLS)}<|/tool|><|end|>"
+    assert rendered.startswith(head)
+    assert rendered.endswith("<|assistant|>")

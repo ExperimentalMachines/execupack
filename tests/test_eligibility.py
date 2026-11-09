@@ -156,3 +156,16 @@ def test_a_chat_model_named_without_a_suffix_is_still_published():
     # The other half of the rule: Qwen3 and LFM2.5-2.6B ship chat models with no suffix, and
     # refusing "base" by name alone would drop them.
     assert evaluate("Qwen/Qwen3-1.7B").eligible
+
+
+def test_phi4_mini_is_eligible_for_cpu_and_gpu_only(source):
+    verdict = eligibility.evaluate(source("microsoft/Phi-4-mini-instruct"), settings.load())
+    assert verdict.reasons == []
+    assert (verdict.family, verdict.variant) == ("phi4_mini", "instruct")
+    assert verdict.export_backends == ["xnnpack", "vulkan"]
+
+
+def test_phi_3_5_mini_shares_the_class_and_is_still_refused(source):
+    config = {**hf_config("microsoft/Phi-4-mini-instruct"), "partial_rotary_factor": 1.0}
+    verdict = eligibility.evaluate(source("microsoft/Phi-3.5-mini-instruct", config=config), settings.load())
+    assert verdict.export_backends == []

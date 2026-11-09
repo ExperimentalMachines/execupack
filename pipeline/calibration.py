@@ -42,6 +42,7 @@ and replies, which are the positions the decision actually lives in. ``sequences
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 # Kept short on purpose: every prompt costs an fp32 generation pass on the runner, and the
@@ -273,9 +274,27 @@ def render_app(tokenizer, user_turn: str, thinking: bool = True) -> str:
     ignore), so the next token is the answer or the tool call itself. Calibration leaves it
     at the template's default and renders exactly as before.
     """
-    messages = [{"role": "system", "content": APP_SYSTEM}, *APP_PRIMER, {"role": "user", "content": user_turn}]
+    system = {"role": "system", "content": APP_SYSTEM}
     extra = {} if thinking else {"enable_thinking": False}
-    return tokenizer.apply_chat_template(messages, tools=APP_TOOLS, tokenize=False, add_generation_prompt=True, **extra)
+    if system_carries_tools(tokenizer):
+        system["tools"] = json.dumps(APP_TOOLS)
+    else:
+        extra["tools"] = APP_TOOLS
+    messages = [system, *APP_PRIMER, {"role": "user", "content": user_turn}]
+    return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **extra)
+
+
+def system_carries_tools(tokenizer) -> bool:
+    """Whether the template reads its tools from the system message rather than ``tools=``.
+
+    Phi-4-mini's does: it prints a system message's ``tools`` field, a JSON string, between
+    ``<|tool|>`` markers, and never reads the ``tools`` argument, so passing the schema the
+    usual way renders a prompt with no tools in it at all (codex review, 2026-11-09). The
+    app sends exactly that field: ``json.dumps`` of the list, ``", "`` between tools
+    (Phi4Prompt.render, ToolDefinition.asToolJson).
+    """
+    template = getattr(tokenizer, "chat_template", None)
+    return isinstance(template, str) and "'tools' in message" in template
 
 
 def app_head(tokenizer) -> str:

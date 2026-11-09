@@ -157,3 +157,42 @@ def test_the_fused_convolution_projection_splits_into_three():
     target, parts = convert.SPLIT_THREE["lfm2"]
     assert target == "conv.in_proj.weight"
     assert parts == ("conv.B_proj.weight", "conv.C_proj.weight", "conv.x_proj.weight")
+
+
+def test_phi4_fused_projections_split_where_hf_splits_them(tmp_path):
+    config = {**tiny_config(), "hidden_size": HIDDEN, "intermediate_size": FFN, "head_dim": HEAD_DIM}
+    plain = tiny_checkpoint()
+    fused = {k: v for k, v in plain.items() if "_proj" not in k or "o_proj" in k or "down_proj" in k}
+    for i in range(2):
+        p = f"model.layers.{i}."
+        fused[p + "self_attn.qkv_proj.weight"] = torch.cat(
+            [plain[p + f"self_attn.{n}_proj.weight"] for n in "qkv"], dim=0
+        )
+        fused[p + "mlp.gate_up_proj.weight"] = torch.cat(
+            [plain[p + "mlp.gate_proj.weight"], plain[p + "mlp.up_proj.weight"]], dim=0
+        )
+    phi_dir = tmp_path / "phi"
+    phi_dir.mkdir()
+    safetensors_torch.save_file(fused, str(phi_dir / "model.safetensors"))
+    convert.convert(phi_dir, tmp_path / "phi.pth", "phi4", config)
+    got = torch.load(tmp_path / "phi.pth")
+    for i in range(2):
+        p, e = f"model.layers.{i}.", f"layers.{i}."
+        assert torch.equal(got[e + "attention.wq.weight"], plain[p + "self_attn.q_proj.weight"])
+        assert torch.equal(got[e + "attention.wk.weight"], plain[p + "self_attn.k_proj.weight"])
+        assert torch.equal(got[e + "attention.wv.weight"], plain[p + "self_attn.v_proj.weight"])
+        assert torch.equal(got[e + "feed_forward.w1.weight"], plain[p + "mlp.gate_proj.weight"])
+        assert torch.equal(got[e + "feed_forward.w3.weight"], plain[p + "mlp.up_proj.weight"])
+        assert not any(k.endswith(("wqkv.weight", "w13.weight")) for k in got)
+    assert torch.equal(got["output.weight"], got["tok_embeddings.weight"])
+
+
+def test_phi4_fused_projection_of_the_wrong_height_is_refused(tmp_path):
+    config = {**tiny_config(layers=1), "hidden_size": HIDDEN, "intermediate_size": FFN + 2, "head_dim": HEAD_DIM}
+    sd = {k: v for k, v in tiny_checkpoint(layers=1).items() if "_proj" not in k or "o_proj" in k or "down_proj" in k}
+    sd["model.layers.0.self_attn.qkv_proj.weight"] = torch.zeros((HEADS + 2 * KV_HEADS) * HEAD_DIM, HIDDEN)
+    sd["model.layers.0.mlp.gate_up_proj.weight"] = torch.zeros(2 * FFN, HIDDEN)
+    (tmp_path / "m").mkdir()
+    safetensors_torch.save_file(sd, str(tmp_path / "m" / "model.safetensors"))
+    with pytest.raises(ValueError, match="gate_up_proj has"):
+        convert.convert(tmp_path / "m", tmp_path / "out.pth", "phi4", config)
