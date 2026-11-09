@@ -324,7 +324,8 @@ def run(
         # replaced between the hash and the read would otherwise leave the report naming
         # codes the file was not built from (codex review, 2026-11-09).
         work_dir.mkdir(parents=True, exist_ok=True)
-        private = work_dir / "codes.pt"
+        # Absolute: the export's subprocess runs inside work_dir (codex review, round five).
+        private = (work_dir / "codes.pt").resolve()
         shutil.copyfile(codes, private)
         codes, codes_sha256 = private, sha256(private)
     proxy = None

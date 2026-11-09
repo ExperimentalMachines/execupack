@@ -138,6 +138,12 @@ def publish_hf(
         # A tokenizer inside any backend folder makes the app stop lending the root one to
         # every other folder (HuggingFaceClient.tokenizerFor), breaking the other backends.
         raise ValueError(f"tokenizer files must stay at the repo root, found {scoped}")
+    # Only what the report vouches for: a model file in the folder that the report does not
+    # list (an extra or renamed .pte) has no verdict and no digest (codex review, round five).
+    listed = {entry["path"] for entry in report["files"]}
+    unvouched = [path for path in new_paths if path.endswith((".pte", ".bin")) and path not in listed]
+    if unvouched:
+        raise ValueError(f"{unvouched} are in {folder} but not in its report; nothing vouches for them")
     require_same_bytes(out_dir, report)
 
     hf = hub.api()

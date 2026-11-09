@@ -265,14 +265,22 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
             continue
         described.add(key)
         line = f"- {BACKEND_TITLES[r['backend']]} {target(r)}: {recipe['description']}"
-        verdict = r.get("gate") or (r.get("gate_proxy") or {}).get("gate") or {}
-        if (verdict.get("override") or {}).get("reason"):
-            line += (
-                f" Published past its decision gate: it kept fp32's choice on {verdict.get('agreed')} of "
-                f"{verdict.get('graded')} tool-call rows, under the 90% the gate asks, and was accepted because "
-                f"{verdict['override']['reason']}"
-            )
         same = [x for x in reports if (x["backend"], x.get("target"), x["recipe"]["description"]) == key]
+        # Every window of this recipe that went out past its gate, each with its own numbers:
+        # one window's verdict cannot speak for the others (codex review, round five).
+        accepted = []
+        for x in sorted(same, key=lambda x: x["window"]["context"]):
+            verdict = x.get("gate") or (x.get("gate_proxy") or {}).get("gate") or {}
+            reason = (verdict.get("override") or {}).get("reason")
+            if reason:
+                accepted.append((naming.window_label(x["window"]["context"]), verdict, reason))
+        if accepted:
+            windows = ", ".join(f"{label} kept {v.get('agreed')} of {v.get('graded')}" for label, v, _ in accepted)
+            reasons = sorted({reason for _, _, reason in accepted})
+            line += (
+                f" Published past its decision gate, which asks that 90% of fp32's tool calls be kept: {windows}. "
+                f"Accepted because {' / '.join(reasons)}"
+            )
         runs = sorted({x["run"]["url"] for x in same if x.get("run", {}).get("url")})
         if runs:
             line += " Built by " + ", ".join(f"[run {i + 1}]({url})" for i, url in enumerate(runs)) + "."
