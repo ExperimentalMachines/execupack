@@ -248,6 +248,18 @@ calling ExecuTorch's own script in compile-only mode:
 - The window is fixed at compile time: `qnn.max_context_len` (2048 to start), or the
   workflow's `context` input (`--context`) for one run.
 - QAIRT's license: `THIRD_PARTY_NOTICES.md`.
+- **Gemma 3 1B** (2026-11-09): gemma-3-1b-it (`gemma3-1b`, dcc83ea8) is published for SM8750 at
+  2k to 32k, the first 32k QNN build here, one 1.15-1.21 GB `.pte` per window, run on EC2 rather
+  than Modal: 2k 1,087 s and 4k 1,070 s (peak RSS 49.5 and 46.3 GiB), 8k 2,202 s (47.9 GiB),
+  16k 3,263 s (77.9 GiB) on r7i.4xlarge (16 vCPU), 32k 4,598 s on r7i.8xlarge (32 vCPU) with a
+  146.9 GiB peak, past the 83 GiB `qnn-matrix` asks Modal for and past a 128 GiB host. A fresh
+  Ubuntu 24.04 image lacks `libatomic1`, which the QAIRT SDK's bundled libc++ needs; without it
+  `libQnnHtp.so` fails to load and the wheel reports only "Failed to set up QNN SDK".
+- Qwen2.5-0.5B/1.5B/3B-Instruct and Qwen2.5-Math-1.5B-Instruct are not in the registry (it has
+  the base 0.5B and 1.5B only, and no 3B). The script takes `--checkpoint`, so their weights could
+  ride the base entries' graph and recipe, but those recipes are post-training int4 with no host
+  check, like the round-to-nearest int4 that failed the gate for Qwen2.5-1.5B on XNNPACK; held
+  back on 2026-11-09 by the operator's choice.
 
 ### MediaTek (phase 4)
 
@@ -408,7 +420,7 @@ pipeline exports it now; **todo** = ExecuTorch supports it and the pipeline does
 | Llama 3.2 1B / 3B (+Instruct) | done | todo | done: 1B/3B-Instruct (registry) | todo (validate `llama.py`: rope_type, tokenizer) | upstream |
 | SmolLM2 135M / 360M / 1.7B (+Instruct) | done | todo | done: 135M-Instruct (registry) | todo (validate, with Llama 3.2) | upstream |
 | SmolLM3 3B | upstream | upstream | done | upstream | upstream |
-| Gemma 3 1B | upstream | upstream | done: gemma-3-1b-it | done: gemma-3-1b-it, MT6991 (`mediatek-gemma.patch`, two RoPE tables) | upstream |
+| Gemma 3 1B | upstream | upstream | done: gemma-3-1b-it, SM8750 2k-32k | done: gemma-3-1b-it, MT6991 (`mediatek-gemma.patch`, two RoPE tables) | upstream |
 | Gemma 2 2B | upstream | upstream | todo | blocked: the 2.36 GB head is over `mtk_converter`'s 2 GB protobuf (finding 47) | upstream |
 | Phi-4-mini 3.8B | todo (watch `microsoft`) | todo | todo | todo | upstream |
 | LFM2.5 350M / 1.2B, LFM2 350M / 700M / 1.2B | todo (watch `LiquidAI`) | todo | upstream | upstream | upstream |
