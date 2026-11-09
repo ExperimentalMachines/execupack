@@ -246,3 +246,15 @@ def test_load_report_wants_exactly_one_report(tmp_path):
     with pytest.raises(ValueError, match="pass --context"):
         publish.load_report(tmp_path, "xnnpack")
     assert publish.load_report(tmp_path, "xnnpack", context=8192)["window"]["context"] == 8192
+
+
+def test_a_report_that_failed_its_decision_gate_is_never_published(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    (out / "xnnpack").mkdir(parents=True)
+    (out / "tokenizer.json").write_text("{}")
+    (out / "xnnpack" / "Qwen3-1.7B-8da4w-2k.pte").write_bytes(b"pte")
+    failed = {**report(2048), "gate": {"passed": False, "problems": ["kept fp32's choice on 7 of 8 calling rows"]}}
+    (out / "xnnpack" / "export-report-2k.json").write_text(json.dumps(failed))
+    monkeypatch.setattr(publish.hub, "api", lambda: pytest.fail("reached the Hub"))
+    with pytest.raises(ValueError, match="failed its decision gate: kept fp32's choice on 7 of 8"):
+        publish.publish_hf(out, "xnnpack")

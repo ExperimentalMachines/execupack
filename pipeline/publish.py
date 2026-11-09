@@ -90,6 +90,13 @@ def publish_hf(
         )
     if not smoke.get("passed"):
         raise ValueError(f"{report['files'][0]['path']} failed its smoke test: {'; '.join(smoke.get('problems', []))}")
+    # A report that was gated must have passed it. One with no gate at all (Vulkan, or a run
+    # without GPTQ and so without an fp32 reference) is published on its smoke test, as before.
+    verdict = report.get("gate")
+    if verdict is not None and not verdict.get("passed"):
+        raise ValueError(
+            f"{report['files'][0]['path']} failed its decision gate: {'; '.join(verdict.get('problems', []))}"
+        )
     repo_id = report["output_repo"]
     folder = _folder(backend, target)
     label = naming.window_label(report["window"]["context"])

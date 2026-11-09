@@ -36,7 +36,12 @@ def run(out_dir: Path, backend: str, work_dir: Path, gate_reference: Path | None
     gates: list[dict] = []
     for path in reports(out_dir, backend):
         report = json.loads(path.read_text())
-        if report.get("smoke") is not None:
+        # Verified already, unless a gate is asked for that this report has not passed: a
+        # first run that passed the smoke test and then failed (or never reached) the gate
+        # leaves a smoke result behind, and skipping on that alone let a second run report
+        # success with nothing gated (codex review, 2026-11-09).
+        gated = gate_reference is None or (report.get("gate") or {}).get("passed")
+        if report.get("smoke") is not None and gated:
             print(f"==> {path.name}: already verified, leaving it")
             results.append(report["smoke"])
             continue
