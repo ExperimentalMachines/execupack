@@ -504,16 +504,25 @@ def test_a_gemma3_layer_pattern_that_does_not_repeat_is_refused():
 
 
 def test_gemma_runs_gemma_py_and_gemma3s_runner_feeds_both_rope_tables():
-    for model, model_type in (("google/gemma-3-1b-it", "gemma3"), ("google/gemma-2-2b-it", "gemma2")):
-        config = hf_config(model)
-        assert families.family_for(config).key == model_type
-        plan = families.mtk_plan(families.family_for(config), config, CFG.mtk.max_chunks)
-        assert (plan.script, plan.preformatter, plan.num_chunks) == ("gemma.py", "gemma.json", 2)  # 26 layers
+    config = hf_config("google/gemma-3-1b-it")
+    assert families.family_for(config).key == "gemma3"
+    plan = families.mtk_plan(families.family_for(config), config, CFG.mtk.max_chunks)
+    assert (plan.script, plan.preformatter, plan.num_chunks) == ("gemma.py", "gemma.json", 2)  # 26 layers
     three = export_mtk.runner_settings(hf_config("google/gemma-3-1b-it"), CFG.mtk, 2, [1, 106])
     assert (three["rot_emb_base"], three["rot_emb_local_base"], three["window_size"]) == (1e6, 10000.0, 512)
     assert three["rot_emb_inputs"] == ["global", "local"]
     two = export_mtk.runner_settings(hf_config("google/gemma-2-2b-it"), CFG.mtk, 2, [1, 107])
     assert two["rot_emb_base"] == 10000.0 and "rot_emb_local_base" not in two and "window_size" not in two
+
+
+def test_a_head_over_mtk_converters_2gb_protobuf_is_refused_at_any_chunk_count():
+    gemma2 = hf_config("google/gemma-2-2b-it")
+    assert families.family_for(gemma2).key == "gemma2"
+    assert families.mtk_head_bytes(gemma2) == 256000 * 2304 * 4  # measured refused, 2026-11-09
+    for chunks in (2, 13, 26):
+        with pytest.raises(families.UnsupportedModel, match="2 GB"):
+            families.mtk_plan(families.family_for(gemma2), gemma2, chunks)
+    assert families.mtk_head_bytes(hf_config("google/gemma-3-1b-it")) == 262144 * 1152 * 4  # 1.2 GB, built
 
 
 def gemma_report(model, window, **runner):

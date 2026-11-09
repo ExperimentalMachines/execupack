@@ -1,0 +1,277 @@
+===== python mtk-gemma2-head-probe.py plain  (2026-11-09, r7i.4xlarge, Ubuntu 24.04 x86_64)
+Failed to load /opt/mtk-venv/lib/python3.10/site-packages/torchao/_C_cutlass_90a.abi3.so: Could not load this library: /opt/mtk-venv/lib/python3.10/site-packages/torchao/_C_cutlass_90a.abi3.so
+Failed to load /opt/mtk-venv/lib/python3.10/site-packages/torchao/_C_mxfp8.cpython-310-x86_64-linux-gnu.so: Could not load this library: /opt/mtk-venv/lib/python3.10/site-packages/torchao/_C_mxfp8.cpython-310-x86_64-linux-gnu.so
+W1109 06:55:19.472000 6640 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+
+RuntimeWarning: An installation of PyTorch 2.14.0+cpu has been detected, which falls outside the supported version range: 2.6.0 > torch >= 2.1.0. As a result, the tool behavior is not fully-verified and may fail unexpectedly. It is recommended to install a supported PyTorch version.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'norm/aten_native_layer_norm_default/input_1' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default_1/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default_2/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'lm_head/aten_permute_copy_default/input_1' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default_2/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default_2/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor '_zero_point_0' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default_2/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'lm_head/aten_view_copy_default/input_1' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default_1/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default_1/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'lm_head/aten_view_copy_default_1/input_1' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default_1/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: The following operator types are not supported by PyTorch delegation: FakeQuantize. Expect longer execution time on PC.
+
+Traceback (most recent call last):
+  File "/home/ubuntu/probe/head_probe.py", line 51, in <module>
+    delegated = to_backend(MethodProgramsPartitionerSpec({"head": edge}, {"head": NeuropilotPartitioner(spec)}))
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.10-linux-x86_64-gnu/lib/python3.10/functools.py", line 889, in wrapper
+    return dispatch(args[0].__class__)(*args, **kw)
+  File "/opt/mtk-venv/lib/python3.10/site-packages/executorch/exir/backend/backend_api.py", line 768, in _
+    lower_all_submodules_to_backend(
+  File "/opt/mtk-venv/lib/python3.10/site-packages/executorch/exir/backend/backend_api.py", line 597, in lower_all_submodules_to_backend
+    backend_cls.preprocess_multimethod(
+  File "/opt/mtk-venv/lib/python3.10/site-packages/executorch/backends/mediatek/preprocess.py", line 165, in preprocess_multimethod
+    preprocess_result = cls.preprocess(program, compile_spec_for_program)
+  File "/opt/mtk-venv/lib/python3.10/site-packages/executorch/backends/mediatek/preprocess.py", line 136, in preprocess
+    mlir_str = converter.convert_to_mlir()
+  File "mtk_converter/python/converters/base_converter.py", line 1418, in mtk_converter.python.converters.base_converter.BaseConverter.convert_to_mlir
+  File "mtk_converter/python/converters/base_converter.py", line 1350, in mtk_converter.python.converters.base_converter.BaseConverter._convert_to_nrpmodel
+  File "mtk_converter/python/converters/base_converter.py", line 1354, in mtk_converter.python.converters.base_converter.BaseConverter._convert_to_nrpmodel
+  File "mtk_converter/python/converters/transformer.py", line 988, in mtk_converter.python.converters.transformer.Transformer.run
+  File "mtk_converter/python/converters/transformer.py", line 1243, in mtk_converter.python.converters.transformer.Transformer.run_pre_quantization_transformations
+  File "mtk_converter/python/converters/transformer.py", line 449, in mtk_converter.python.converters.transformer.apply_transformations
+  File "mtk_converter/python/converters/transformer.py", line 478, in mtk_converter.python.converters.transformer.apply_transformations
+  File "mtk_converter/python/converters/transformer.py", line 463, in mtk_converter.python.converters.transformer.apply_transformations
+  File "mtk_converter/python/converters/transformations/resolve_fake_quantize.py", line 136, in mtk_converter.python.converters.transformations.resolve_fake_quantize.apply
+  File "mtk_converter/python/tools/executor.py", line 534, in mtk_converter.python.tools.executor.Executor.__init__
+  File "mtk_converter/python/tools/executor.py", line 167, in mtk_converter.python.tools.executor._ModelExecutorImpl.__init__
+  File "mtk_converter/python/tools/executor.py", line 387, in mtk_converter.python.tools.executor._ModelExecutorImpl._create_submodel_impls
+  File "mtk_converter/python/tools/executor.py", line 87, in mtk_converter.python.tools.executor._SubmodelExecutorImpl.__init__
+  File "mtk_converter/python/py_interpreter.py", line 57, in mtk_converter.python.py_interpreter.PyInterpreter.__init__
+ValueError: Message mtk_converter.ModelProto exceeds maximum protobuf size of 2GB: 2361344528
+exit 1
+
+===== python mtk-gemma2-head-probe.py fp16  (2026-11-09, r7i.4xlarge, Ubuntu 24.04 x86_64)
+Failed to load /opt/mtk-venv/lib/python3.10/site-packages/torchao/_C_cutlass_90a.abi3.so: Could not load this library: /opt/mtk-venv/lib/python3.10/site-packages/torchao/_C_cutlass_90a.abi3.so
+Failed to load /opt/mtk-venv/lib/python3.10/site-packages/torchao/_C_mxfp8.cpython-310-x86_64-linux-gnu.so: Could not load this library: /opt/mtk-venv/lib/python3.10/site-packages/torchao/_C_mxfp8.cpython-310-x86_64-linux-gnu.so
+W1109 06:55:32.311000 6686 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+
+RuntimeWarning: An installation of PyTorch 2.14.0+cpu has been detected, which falls outside the supported version range: 2.6.0 > torch >= 2.1.0. As a result, the tool behavior is not fully-verified and may fail unexpectedly. It is recommended to install a supported PyTorch version.
+
+converter: convert_float32_weights_to_float16 = True
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default_2/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default_1/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default_1/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default_2/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default_1/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'lm_head/aten_view_copy_default_1/input_1' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default_2/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'norm/aten_native_layer_norm_default/input_1' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'lm_head/aten_permute_copy_default/input_1' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor '_zero_point_0' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default_2/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'lm_head/aten_view_copy_default/input_1' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default_1/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: The following operator types are not supported by PyTorch delegation: FakeQuantize. Expect longer execution time on PC.
+
+Traceback (most recent call last):
+  File "/home/ubuntu/probe/head_probe.py", line 51, in <module>
+    delegated = to_backend(MethodProgramsPartitionerSpec({"head": edge}, {"head": NeuropilotPartitioner(spec)}))
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.10-linux-x86_64-gnu/lib/python3.10/functools.py", line 889, in wrapper
+    return dispatch(args[0].__class__)(*args, **kw)
+  File "/opt/mtk-venv/lib/python3.10/site-packages/executorch/exir/backend/backend_api.py", line 768, in _
+    lower_all_submodules_to_backend(
+  File "/opt/mtk-venv/lib/python3.10/site-packages/executorch/exir/backend/backend_api.py", line 597, in lower_all_submodules_to_backend
+    backend_cls.preprocess_multimethod(
+  File "/opt/mtk-venv/lib/python3.10/site-packages/executorch/backends/mediatek/preprocess.py", line 165, in preprocess_multimethod
+    preprocess_result = cls.preprocess(program, compile_spec_for_program)
+  File "/opt/mtk-venv/lib/python3.10/site-packages/executorch/backends/mediatek/preprocess.py", line 136, in preprocess
+    mlir_str = converter.convert_to_mlir()
+  File "mtk_converter/python/converters/base_converter.py", line 1418, in mtk_converter.python.converters.base_converter.BaseConverter.convert_to_mlir
+  File "mtk_converter/python/converters/base_converter.py", line 1350, in mtk_converter.python.converters.base_converter.BaseConverter._convert_to_nrpmodel
+  File "mtk_converter/python/converters/base_converter.py", line 1354, in mtk_converter.python.converters.base_converter.BaseConverter._convert_to_nrpmodel
+  File "mtk_converter/python/converters/transformer.py", line 988, in mtk_converter.python.converters.transformer.Transformer.run
+  File "mtk_converter/python/converters/transformer.py", line 1243, in mtk_converter.python.converters.transformer.Transformer.run_pre_quantization_transformations
+  File "mtk_converter/python/converters/transformer.py", line 449, in mtk_converter.python.converters.transformer.apply_transformations
+  File "mtk_converter/python/converters/transformer.py", line 478, in mtk_converter.python.converters.transformer.apply_transformations
+  File "mtk_converter/python/converters/transformer.py", line 463, in mtk_converter.python.converters.transformer.apply_transformations
+  File "mtk_converter/python/converters/transformations/resolve_fake_quantize.py", line 136, in mtk_converter.python.converters.transformations.resolve_fake_quantize.apply
+  File "mtk_converter/python/tools/executor.py", line 534, in mtk_converter.python.tools.executor.Executor.__init__
+  File "mtk_converter/python/tools/executor.py", line 167, in mtk_converter.python.tools.executor._ModelExecutorImpl.__init__
+  File "mtk_converter/python/tools/executor.py", line 387, in mtk_converter.python.tools.executor._ModelExecutorImpl._create_submodel_impls
+  File "mtk_converter/python/tools/executor.py", line 87, in mtk_converter.python.tools.executor._SubmodelExecutorImpl.__init__
+  File "mtk_converter/python/py_interpreter.py", line 57, in mtk_converter.python.py_interpreter.PyInterpreter.__init__
+ValueError: Message mtk_converter.ModelProto exceeds maximum protobuf size of 2GB: 2361344528
+exit 1
+
+===== python mtk-gemma2-head-probe.py fold  (2026-11-09, r7i.4xlarge, Ubuntu 24.04 x86_64)
+Failed to load /opt/mtk-venv/lib/python3.10/site-packages/torchao/_C_cutlass_90a.abi3.so: Could not load this library: /opt/mtk-venv/lib/python3.10/site-packages/torchao/_C_cutlass_90a.abi3.so
+Failed to load /opt/mtk-venv/lib/python3.10/site-packages/torchao/_C_mxfp8.cpython-310-x86_64-linux-gnu.so: Could not load this library: /opt/mtk-venv/lib/python3.10/site-packages/torchao/_C_mxfp8.cpython-310-x86_64-linux-gnu.so
+W1109 06:55:59.392000 6767 torch/utils/_pytree.py:630] <enum 'KernelPreference'> is an Enum subclass and is now natively supported by torch.compile as an opaque value type. Calling register_constant() on Enum subclasses is deprecated and will be an error in a future release.
+
+RuntimeWarning: An installation of PyTorch 2.14.0+cpu has been detected, which falls outside the supported version range: 2.6.0 > torch >= 2.1.0. As a result, the tool behavior is not fully-verified and may fail unexpectedly. It is recommended to install a supported PyTorch version.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'norm/aten_native_layer_norm_default/input_1' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default_2/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default_1/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor '_zero_point_0' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'lm_head/aten_view_copy_default_1/input_1' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default_2/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'lm_head/aten_permute_copy_default/input_1' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default_1/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default_2/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default_1/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default_2/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default_1/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_dequantize_per_tensor_default/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default/input_2' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'quantized_decomposed_quantize_per_tensor_default/input_1' from DT_FLOAT64 to DT_FLOAT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: Forcibly convert the unsupported type of tensor 'lm_head/aten_view_copy_default/input_1' from DT_INT64 to DT_INT32. Expect quality drop in some cases.
+
+
+RuntimeWarning: The following operator types are not supported by PyTorch delegation: Torch_AtenFakeQuantizeAffine. Expect longer execution time on PC.
+
+
+RuntimeWarning: The following operator types are not supported by PyTorch delegation: FakeQuantize. Expect longer execution time on PC.
+
+Traceback (most recent call last):
+  File "/home/ubuntu/probe/head_probe.py", line 51, in <module>
+    delegated = to_backend(MethodProgramsPartitionerSpec({"head": edge}, {"head": NeuropilotPartitioner(spec)}))
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.10-linux-x86_64-gnu/lib/python3.10/functools.py", line 889, in wrapper
+    return dispatch(args[0].__class__)(*args, **kw)
+  File "/opt/mtk-venv/lib/python3.10/site-packages/executorch/exir/backend/backend_api.py", line 768, in _
+    lower_all_submodules_to_backend(
+  File "/opt/mtk-venv/lib/python3.10/site-packages/executorch/exir/backend/backend_api.py", line 597, in lower_all_submodules_to_backend
+    backend_cls.preprocess_multimethod(
+  File "/opt/mtk-venv/lib/python3.10/site-packages/executorch/backends/mediatek/preprocess.py", line 165, in preprocess_multimethod
+    preprocess_result = cls.preprocess(program, compile_spec_for_program)
+  File "/opt/mtk-venv/lib/python3.10/site-packages/executorch/backends/mediatek/preprocess.py", line 136, in preprocess
+    mlir_str = converter.convert_to_mlir()
+  File "mtk_converter/python/converters/base_converter.py", line 1418, in mtk_converter.python.converters.base_converter.BaseConverter.convert_to_mlir
+  File "mtk_converter/python/converters/base_converter.py", line 1350, in mtk_converter.python.converters.base_converter.BaseConverter._convert_to_nrpmodel
+  File "mtk_converter/python/converters/base_converter.py", line 1354, in mtk_converter.python.converters.base_converter.BaseConverter._convert_to_nrpmodel
+  File "mtk_converter/python/converters/transformer.py", line 988, in mtk_converter.python.converters.transformer.Transformer.run
+  File "mtk_converter/python/converters/transformer.py", line 1243, in mtk_converter.python.converters.transformer.Transformer.run_pre_quantization_transformations
+  File "mtk_converter/python/converters/transformer.py", line 449, in mtk_converter.python.converters.transformer.apply_transformations
+  File "mtk_converter/python/converters/transformer.py", line 478, in mtk_converter.python.converters.transformer.apply_transformations
+  File "mtk_converter/python/converters/transformer.py", line 463, in mtk_converter.python.converters.transformer.apply_transformations
+  File "mtk_converter/python/converters/transformations/resolve_fake_quantize.py", line 136, in mtk_converter.python.converters.transformations.resolve_fake_quantize.apply
+  File "mtk_converter/python/tools/executor.py", line 534, in mtk_converter.python.tools.executor.Executor.__init__
+  File "mtk_converter/python/tools/executor.py", line 167, in mtk_converter.python.tools.executor._ModelExecutorImpl.__init__
+  File "mtk_converter/python/tools/executor.py", line 387, in mtk_converter.python.tools.executor._ModelExecutorImpl._create_submodel_impls
+  File "mtk_converter/python/tools/executor.py", line 87, in mtk_converter.python.tools.executor._SubmodelExecutorImpl.__init__
+  File "mtk_converter/python/py_interpreter.py", line 57, in mtk_converter.python.py_interpreter.PyInterpreter.__init__
+ValueError: Message mtk_converter.ModelProto exceeds maximum protobuf size of 2GB: 2361344648
+exit 1
+

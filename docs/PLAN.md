@@ -285,7 +285,9 @@ calling ExecuTorch's own script in compile-only mode:
 - **Families:** the scripts build the model from `config.json`'s `model_type`, so any size
   works, not a fixed list. Qwen3 (`qwen.py`), Llama 3.2 and SmolLM2 (`llama.py`, with
   `"tokenizer": "pretrained_fast"` written into the config, SmolLM2 calibrating in ChatML)
-  are exported; Gemma 3 (`gemma3_text` vs `gemma3`) waits for validation.
+  are exported, and Gemma 3 (`gemma.py`, with `families.mtk_model_config` writing MediaTek's
+  spelling of the config: model_type `gemma3`, `sliding_window_attention_size`,
+  `global_local_attention_pattern`, `use_res_clamp` false).
 - **Stock RoPE was wrong** (2026-10-04, finding 37): `get_master_rot_emb` used base 10000
   because neither `QwenConfig` nor `LlamaConfig` kept `rope_theta`, and it had no Llama 3
   frequency scaling. In the fp32 graph, before quantization, Qwen3-0.6B was at KL 0.082 and
@@ -302,6 +304,18 @@ calling ExecuTorch's own script in compile-only mode:
   full fp32 cache at the window, so Qwen3 at 32k (about 285 GB for the 0.6B), Qwen3-4B from
   16k and Llama-3.2-3B at 32k fit no hosted runner and are left out of the matrix; the
   streaming calibration `lfm2.py` uses would lift that.
+- **Gemma** (2026-11-09, findings 46-47). Gemma 3's sliding layers rotate at base 10000 and
+  its global ones at 1e6, and stock `Gemma3ModelChunk` takes one table for both: in fp32,
+  10000 everywhere fails the decision gate (6/11, KL 0.18) and 1e6 everywhere, the runner
+  sample's setting, worse (5/11, KL 1.42). `mediatek-gemma.patch` adds a second table input
+  (`pos_emb_local`) and the per-layer choice, which is exact against Hugging Face (KL 0,
+  11/11); the runner config names `rot_emb_local_base` and `rot_emb_inputs`, and the card
+  says MediaTek's 1.5.1 runner, which feeds one table, cannot run these files correctly.
+  gemma-3-1b-it is published for MT6991 (A16W8, 2 chunks) at 512 and 2k. Gemma 2 2B is exact
+  as MediaTek ships it up to its 4,096-token sliding window (the card says what differs past
+  it), but its 2.36 GB fp32 output head is over `mtk_converter`'s 2 GB protobuf at any chunk
+  count, plain, fp16 or with int8 weights folded, so `mtk_plan` refuses it and Gemma 2 has
+  no backend.
 - **Output** per chip: the chunk `.pte` files, the fp32 token embedding table the runner
   reads from disk, and `config.json` with the flags MediaTek's LLM runner
   (`examples/mediatek/executor_runner`) needs. They do not run on `TextLLMRunner`.
@@ -389,8 +403,8 @@ pipeline exports it now; **todo** = ExecuTorch supports it and the pipeline does
 | Llama 3.2 1B / 3B (+Instruct) | done | todo | done: 1B/3B-Instruct (registry) | todo (validate `llama.py`: rope_type, tokenizer) | upstream |
 | SmolLM2 135M / 360M / 1.7B (+Instruct) | done | todo | done: 135M-Instruct (registry) | todo (validate, with Llama 3.2) | upstream |
 | SmolLM3 3B | upstream | upstream | done | upstream | upstream |
-| Gemma 3 1B | upstream | upstream | done: gemma-3-1b-it | todo (validate `gemma.py`: model_type gemma3_text) | upstream |
-| Gemma 2 2B | upstream | upstream | todo | todo | upstream |
+| Gemma 3 1B | upstream | upstream | done: gemma-3-1b-it | done: gemma-3-1b-it, MT6991 (`mediatek-gemma.patch`, two RoPE tables) | upstream |
+| Gemma 2 2B | upstream | upstream | todo | blocked: the 2.36 GB head is over `mtk_converter`'s 2 GB protobuf (finding 47) | upstream |
 | Phi-4-mini 3.8B | todo (watch `microsoft`) | todo | todo | todo | upstream |
 | LFM2.5 350M / 1.2B, LFM2 350M / 700M / 1.2B | todo (watch `LiquidAI`) | todo | upstream | upstream | upstream |
 | Qwen3.5 0.8B / 2B / 4B | blocked: the app refuses `qwen35` names | — | upstream | upstream | upstream |

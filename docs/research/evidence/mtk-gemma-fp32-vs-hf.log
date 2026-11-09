@@ -1,0 +1,40 @@
+# mtk-gemma-vs-hf.py, 2026-11-09, r7i.8xlarge, Ubuntu 24.04 x86_64, fp32, CPU.
+# MediaTek's chunk classes at ExecuTorch 3b60683 (examples/mediatek/models/llm_models/modeling_gemma.py),
+# one chunk of every layer, against transformers' fp32 eager model. Console output as printed by the
+# harness's wrapper, one line per variant. Passage: 900 tokens of the model card, every position.
+# Gate: execupack's 16 decision-gate prompts, last position (pipeline/gate.py).
+
+== gemma3  google/gemma-3-1b-it @ dcc83ea841ab6100d6b47a070329e1ba4cf78752
+# 1) Stock Gemma3ModelChunk: one RoPE table for every layer. Sliding layers use base 10000 and
+#    global ones 1e6 in Hugging Face's model; MediaTek's master table is built at 10000, its runner
+#    sample (run_gemma3_sample.sh) sets rot_emb_base 1e6. "per-layer" here emulated both tables.
+MediaTek config: GemmaConfig Gemma3ModelChunk
+passage 900 tokens; gate prompts 392 - 428 ; window 908
+MediaTek master table vs base 10000: max |diff| 2.00e+00
+MediaTek master table vs base 1e+06: max |diff| 6.10e-05
+  rope=10000 everywhere   mask=-100    passage KL=0.1769 (max 8.460) top1=0.884 ppl hf/mtk=9.575/10.772 | gate top1=0.438 KL=5.6725 verdict=False 6/11 quiet 1/3
+  rope=10000 everywhere   mask=-1e+09  passage KL=0.1769 (max 8.460) top1=0.884 ppl hf/mtk=9.575/10.772 | gate top1=0.438 KL=5.6725 verdict=False 6/11 quiet 1/3
+  rope=1e6 everywhere     mask=-100    passage KL=1.4200 (max 12.288) top1=0.521 ppl hf/mtk=9.575/22.726 | gate top1=0.312 KL=3.6574 verdict=False 5/11 quiet 0/3
+  rope=1e6 everywhere     mask=-1e+09  passage KL=1.4200 (max 12.288) top1=0.521 ppl hf/mtk=9.575/22.726 | gate top1=0.312 KL=3.6574 verdict=False 5/11 quiet 0/3
+  rope=per-layer          mask=-100    passage KL=0.0000 (max 0.000) top1=1.000 ppl hf/mtk=9.575/9.575 | gate top1=1.000 KL=0.0000 verdict=True 11/11 quiet 3/3
+  rope=per-layer          mask=-1e+09  passage KL=0.0000 (max 0.000) top1=1.000 ppl hf/mtk=9.575/9.575 | gate top1=1.000 KL=0.0000 verdict=True 11/11 quiet 3/3
+
+# 2) Patched Gemma3ModelChunk (third_party/executorch/patches/mediatek-gemma.patch): the chunk
+#    takes pos_emb (global, 1e6) and pos_emb_local (10000) and gives each layer its own.
+MediaTek config: GemmaConfig Gemma3ModelChunk
+MediaTek master table vs base 10000: max |diff| 2.00e+00
+MediaTek master table vs base 1e+06: max |diff| 6.10e-05
+  rope=10000 everywhere   passage KL=0.17687 (max 8.4599) top1=0.884 ppl hf/mtk=9.575/10.772 | gate top1=0.438 verdict=False 6/11 quiet 1/3
+  rope=1e6 everywhere     passage KL=1.41998 (max 12.2876) top1=0.521 ppl hf/mtk=9.575/22.726 | gate top1=0.312 verdict=False 5/11 quiet 0/3
+  rope=per-layer          passage KL=0.00000 (max 0.0000) top1=1.000 ppl hf/mtk=9.575/9.575 | gate top1=1.000 verdict=True 11/11 quiet 3/3
+
+== gemma2  google/gemma-2-2b-it @ 299a8560bedf22ed1c72a8a11e7dce4a7f9f51f8
+# Stock Gemma2ModelChunk, base 10000 on every layer as in Hugging Face's model. The template
+# refuses a system turn, so the gate's system text is folded into the first user turn.
+# Window 908 < sliding_window 4096, so the sliding layers see what they see in Hugging Face's.
+MediaTek config: GemmaConfig Gemma2ModelChunk
+passage 900 tokens; gate prompts 391 - 425 ; window 908
+MediaTek master table vs base 10000: max |diff| 1.22e-04
+MediaTek master table vs base 1e+06: max |diff| 2.00e+00
+  rope=10000 everywhere   mask=-100    passage KL=0.00000 (max 0.0000) top1=1.000 ppl hf/mtk=6.054/6.054 | gate top1=1.000 KL=0.00000 verdict=True 8/8 quiet 4/4
+  rope=10000 everywhere   mask=-1e+09  passage KL=0.00000 (max 0.0000) top1=1.000 ppl hf/mtk=6.054/6.054 | gate top1=1.000 KL=0.00000 verdict=True 8/8 quiet 4/4

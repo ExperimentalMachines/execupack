@@ -242,6 +242,22 @@ def mtk_limits(config: dict, window: int) -> list[str]:
     return []
 
 
+# mtk_converter 8.13.0 (PyTorchV2Converter) builds each delegated chunk as one protobuf ModelProto
+# holding its weights in fp32, and protobuf refuses a message over 2 GB. The output head sits
+# whole in the last chunk, so a head over the cap fails at every chunk count. Gemma 2 2B's
+# tied 256000 x 2304 head is 2,359,296,000 bytes. A head-only probe (final norm + head, A16W8,
+# 2026-11-09) was refused plain, with convert_float32_weights_to_float16, and with
+# convert_pt2e(fold_quantize=True): "exceeds maximum protobuf size of 2GB" at 2,361,344,528 bytes
+# (2,361,344,648 folded). docs/research, finding 47.
+MTK_CONVERTER_PROTO_BYTES = 2**31
+
+
+def mtk_head_bytes(config: dict) -> int:
+    """The output head's size as mtk_converter holds it: vocab x hidden in fp32 (0 if unstated)."""
+    c = text_config(config)
+    return int(c.get("vocab_size") or 0) * int(c.get("hidden_size") or 0) * 4
+
+
 def mtk_chunks(n_layers: int, max_chunks: int) -> int:
     """Most chunks up to ``max_chunks`` that split the layers evenly (the scripts require it)."""
     return next(n for n in range(min(max_chunks, n_layers), 0, -1) if n_layers % n == 0)
@@ -289,6 +305,12 @@ def mtk_plan(family: Family, config: dict, max_chunks: int) -> MtkPlan:
             scaling = None
     if scaling is not None:
         raise UnsupportedModel("RoPE scaling is not validated on the MediaTek scripts")
+    head = mtk_head_bytes(c)
+    if head >= MTK_CONVERTER_PROTO_BYTES:
+        raise UnsupportedModel(
+            f"the output head is {head:,} bytes in fp32, and mtk_converter puts each chunk in one protobuf "
+            "capped at 2 GB, with the whole head in the last chunk at any chunk count"
+        )
     return MtkPlan(script, preformatter, mtk_chunks(int(c["num_hidden_layers"]), max_chunks), tokenizer)
 
 
