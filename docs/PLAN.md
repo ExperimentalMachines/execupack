@@ -269,7 +269,10 @@ calling ExecuTorch's own script in compile-only mode:
   (`export_mtk.tool_env`): the wheel's `libextract_shared.so` needs the `libc++.so.1`
   bundled beside it but has no RPATH (docs/research, finding 21).
 - **Scripts:** the LLM export scripts are in ExecuTorch's source, not the wheel; the
-  workflow sparse-checks-out `examples/mediatek` at `EXECUTORCH_COMMIT`.
+  workflow sparse-checks-out `examples/mediatek` at `EXECUTORCH_COMMIT`. Each run executes
+  them in its own copy (31 MB) in its work folder (`export_mtk.private_examples`): they write
+  chunks to `pte/<weights>_<precision>_<n>_chunks`, a name without the window, and two windows
+  of Gemma 3 on one EC2 box (2026-11-09) shared it until the first to finish deleted it.
 - **Recipe** (MediaTek's own, `shell_scripts/export_qwen.sh`): A16W4, the model cut into up
   to 4 chunks of equal layer counts, a 128-token prompt graph and a one-token generation
   graph over a 512-token cache, calibrated on MediaTek's `alpaca.txt` prompts (9, up to 9
