@@ -314,6 +314,22 @@ def modal_shape(window: int) -> tuple[int, int] | None:
     return None
 
 
+def private_examples(examples_dir: Path, work_dir: Path) -> Path:
+    """A copy of examples/mediatek (31 MB) in this run's work folder, to run the script in.
+
+    The scripts write their chunks to pte/<exp> under the working directory, and <exp>
+    (utils.get_exp_name) names the weights, precision and chunk count but not the window, so
+    two windows of one model shared the folder, and each run deletes it when done. On one host
+    (an EC2 box, 2026-11-09; CI gives every job its own runner) Gemma 3's 8k run finished
+    first and took the 16k run's chunk 0 with it. Its own copy keeps a run's chunks its own,
+    and goes with the work folder.
+    """
+    run_dir = (work_dir / "mediatek").resolve()
+    shutil.rmtree(run_dir, ignore_errors=True)
+    shutil.copytree(examples_dir, run_dir, symlinks=True, ignore=shutil.ignore_patterns("pte", "__pycache__"))
+    return run_dir
+
+
 def exp_name(weight_dir: Path, precision: str, chunks: int) -> str:
     """The name the scripts give the output folder and files (utils.get_exp_name)."""
     return f"{weight_dir.name}_{precision}_{chunks}_chunks"
@@ -572,18 +588,19 @@ def run(
         corpus = json.loads(summary_path.read_text(encoding="utf-8"))
 
     command = export_command(tool_python, plan, recipe, soc, weight_dir / "config.json", dataset)
-    print("==> " + " ".join(command))
+    run_dir = private_examples(examples_dir, work_dir)
+    print("==> " + " ".join(command) + f"  (in {run_dir})")
     export_started = time.time()
     env = tool_env(tool_python, dict(os.environ))
     with MemorySampler() as memory:
-        subprocess.run(command, check=True, cwd=examples_dir, env=env)
+        subprocess.run(command, check=True, cwd=run_dir, env=env)
     export_seconds = time.time() - export_started
 
     exp = exp_name(weight_dir, recipe.precision, plan.num_chunks)
-    built = [examples_dir / "pte" / exp / f"{exp}_{i}.pte" for i in range(plan.num_chunks)]
+    built = [run_dir / "pte" / exp / f"{exp}_{i}.pte" for i in range(plan.num_chunks)]
     missing = [p.name for p in built if not p.is_file()]
     if missing:
-        raise ExportError(f"the export wrote no {missing} in {examples_dir / 'pte' / exp}")
+        raise ExportError(f"the export wrote no {missing} in {run_dir / 'pte' / exp}")
     chunks = []
     for path, name in zip(built, chunk_names, strict=True):
         shutil.move(str(path), backend_dir / name)
@@ -688,8 +705,7 @@ def run(
     )
     (backend_dir / report_file(window)).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if not keep_work:
-        shutil.rmtree(work_dir, ignore_errors=True)
-        shutil.rmtree(examples_dir / "pte" / exp, ignore_errors=True)
+        shutil.rmtree(work_dir, ignore_errors=True)  # with the run's own copy of the scripts
     if not check["passed"]:
         raise ExportError("structural check failed: " + "; ".join(check["problems"]))
     return report

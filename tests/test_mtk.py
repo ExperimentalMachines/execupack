@@ -577,3 +577,23 @@ def test_the_gemma3_card_says_its_runner_must_feed_both_rope_tables():
     assert "cannot run them correctly" in text
     plain = manifest.readme("experimentalmachines/Qwen3-0.6B-ExecuTorch", [mtk_report()], [], [])
     assert "rot_emb_inputs" not in plain
+
+
+def test_each_run_builds_in_its_own_copy_of_the_scripts(tmp_path):
+    # Two windows of one model on one host shared pte/<exp>, which has no window in its name,
+    # and the first run to finish deleted the other's chunk (2026-11-09).
+    examples = tmp_path / "examples" / "mediatek"
+    (examples / "model_export_scripts").mkdir(parents=True)
+    (examples / "model_export_scripts" / "gemma.py").write_text("# script\n")
+    (examples / "pte" / "gemma-3-1b-it_A16W8_2_chunks").mkdir(parents=True)
+    (examples / "pte" / "gemma-3-1b-it_A16W8_2_chunks" / "stale_0.pte").write_bytes(b"x")
+    (examples / "model_export_scripts" / "__pycache__").mkdir()
+    runs = [export_mtk.private_examples(examples, tmp_path / f"work-{w}") for w in (8192, 16384)]
+    assert runs[0] != runs[1] and all(r.is_absolute() for r in runs)
+    for run in runs:
+        assert (run / "model_export_scripts" / "gemma.py").read_text() == "# script\n"
+        assert not (run / "pte").exists() and not (run / "model_export_scripts" / "__pycache__").exists()
+    (runs[0] / "leftover").write_text("from a crashed run")
+    again = export_mtk.private_examples(examples, tmp_path / "work-8192")
+    assert again == runs[0] and not (again / "leftover").exists()
+    assert (examples / "pte" / "gemma-3-1b-it_A16W8_2_chunks" / "stale_0.pte").exists()  # never touched
