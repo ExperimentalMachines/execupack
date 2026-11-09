@@ -172,7 +172,7 @@ def check_gate_proxy(path: Path | None, sha: str, window: int, codes_sha256: str
         problems.append("it was built from other codes")
     if (recipe.get("output_head") == "int8 per channel") != (output_bits == 8):
         problems.append("its output head differs")
-    if not verdict.get("passed"):
+    if not verdict.get("passed") and not (verdict.get("override") or {}).get("reason"):
         problems.append("its decision gate did not pass" if verdict else "it has no decision gate")
     if problems:
         raise ExportError(f"gate proxy {path} does not stand for this export: {'; '.join(problems)}")
@@ -180,7 +180,7 @@ def check_gate_proxy(path: Path | None, sha: str, window: int, codes_sha256: str
         "report": Path(path).name,
         "file": report["files"][0]["path"],
         "sha256": report["files"][0].get("sha256"),
-        "gate": {k: verdict.get(k) for k in ("passed", "graded", "agreed", "fp32_mean", "export_mean")},
+        "gate": {k: verdict.get(k) for k in ("passed", "graded", "agreed", "fp32_mean", "export_mean", "override")},
     }
 
 

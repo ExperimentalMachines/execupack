@@ -265,6 +265,13 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
             continue
         described.add(key)
         line = f"- {BACKEND_TITLES[r['backend']]} {target(r)}: {recipe['description']}"
+        verdict = r.get("gate") or (r.get("gate_proxy") or {}).get("gate") or {}
+        if (verdict.get("override") or {}).get("reason"):
+            line += (
+                f" Published past its decision gate: it kept fp32's choice on {verdict.get('agreed')} of "
+                f"{verdict.get('graded')} tool-call rows, under the 90% the gate asks, and was accepted because "
+                f"{verdict['override']['reason']}"
+            )
         same = [x for x in reports if (x["backend"], x.get("target"), x["recipe"]["description"]) == key]
         runs = sorted({x["run"]["url"] for x in same if x.get("run", {}).get("url")})
         if runs:

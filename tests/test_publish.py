@@ -274,3 +274,16 @@ def test_a_gptq_file_needs_its_own_gate_or_for_vulkan_a_passing_proxy():
     publish.require_publishable({**gpu, "gate_proxy": {"gate": {"passed": True}}})
     # Round to nearest has no fp32 reference to be gated against, as before.
     publish.require_publishable({**report(2048, backend="vulkan"), "recipe": {"int4_codes": "round-to-nearest"}})
+
+
+def test_a_failed_gate_publishes_only_with_an_operators_recorded_reason():
+    gptq = {"int4_codes": "gptq", "label": "x", "description": "x"}
+    failed = {"passed": False, "agreed": 7, "graded": 8, "problems": ["7 of 8"]}
+    cpu = {**report(2048), "recipe": gptq, "gate": failed}
+    with pytest.raises(ValueError, match="failed its decision gate"):
+        publish.require_publishable(cpu)
+    with pytest.raises(ValueError, match="failed its decision gate"):
+        publish.require_publishable({**cpu, "gate": {**failed, "override": {"reason": ""}}})
+    publish.require_publishable({**cpu, "gate": {**failed, "override": {"reason": "fp32 is near a tie"}}})
+    gpu = {**report(2048, backend="vulkan"), "recipe": gptq}
+    publish.require_publishable({**gpu, "gate_proxy": {"gate": {**failed, "override": {"reason": "near a tie"}}}})

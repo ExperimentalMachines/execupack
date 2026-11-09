@@ -30,8 +30,17 @@ def reports(out_dir: Path, backend: str) -> list[Path]:
     return found
 
 
-def run(out_dir: Path, backend: str, work_dir: Path, gate_reference: Path | None = None) -> dict:
-    """Run the smoke test for every window in ``out_dir`` and write the results back."""
+def run(
+    out_dir: Path, backend: str, work_dir: Path, gate_reference: Path | None = None, accept_gate: str | None = None
+) -> dict:
+    """Run the smoke test for every window in ``out_dir`` and write the results back.
+
+    ``accept_gate`` is an operator's reason for publishing a file that fails its decision
+    gate. The verdict is kept as measured (``passed`` stays false) and the reason is recorded
+    beside it as ``override``; publish accepts a failed gate only with one. It exists for a
+    model whose fp32 decisions are themselves near ties, so that a 4-bit file cannot keep all
+    of them: Phi-4-mini, 7 of 8 kept, 2026-11-09.
+    """
     results = []
     gates: list[dict] = []
     for path in reports(out_dir, backend):
@@ -40,7 +49,8 @@ def run(out_dir: Path, backend: str, work_dir: Path, gate_reference: Path | None
         # first run that passed the smoke test and then failed (or never reached) the gate
         # leaves a smoke result behind, and skipping on that alone let a second run report
         # success with nothing gated (codex review, 2026-11-09).
-        gated = gate_reference is None or (report.get("gate") or {}).get("passed")
+        recorded = report.get("gate") or {}
+        gated = gate_reference is None or recorded.get("passed") or (accept_gate and recorded.get("override"))
         if report.get("smoke") is not None and gated:
             print(f"==> {path.name}: already verified, leaving it")
             results.append(report["smoke"])
@@ -101,6 +111,9 @@ def run(out_dir: Path, backend: str, work_dir: Path, gate_reference: Path | None
                     "the quiet ones, so the gate checked that the export tracks its fp32 model "
                     "and not that it still calls tools"
                 )
+            if not verdict["passed"] and accept_gate:
+                verdict["override"] = {"reason": accept_gate}
+                print(f"    gate failed and accepted by the operator: {accept_gate}")
             report["gate"] = verdict
             gates.append(verdict)
 
@@ -111,7 +124,7 @@ def run(out_dir: Path, backend: str, work_dir: Path, gate_reference: Path | None
     if failed:
         problems = "; ".join(p for r in failed for p in r.get("problems", []))
         raise ExportError(f"smoke test failed: {problems}")
-    regressed = [g for g in gates if not g.get("passed")]
+    regressed = [g for g in gates if not g.get("passed") and not g.get("override")]
     if regressed:
         problems = "; ".join(p for g in regressed for p in g.get("problems", []))
         raise ExportError(f"decision gate failed: {problems}")

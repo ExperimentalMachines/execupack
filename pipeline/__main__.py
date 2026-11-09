@@ -60,7 +60,9 @@ def _verify(args) -> int:
 
     try:
         gate = Path(args.gate) if args.gate else None
-        summary = verify_module.run(Path(args.out), args.backend, Path(args.work), gate_reference=gate)
+        summary = verify_module.run(
+            Path(args.out), args.backend, Path(args.work), gate_reference=gate, accept_gate=args.accept_gate
+        )
     except ExportError as error:
         print(f"verify failed: {error}", file=sys.stderr)
         return 2
@@ -447,6 +449,12 @@ def main(argv: list[str] | None = None) -> int:
         "--gate",
         default=None,
         help="gate.json from `solve`: the file must decide like the fp32 model before it publishes",
+    )
+    verify.add_argument(
+        "--accept-gate",
+        default=None,
+        metavar="REASON",
+        help="publish even if the gate fails, recording this reason beside the measured verdict",
     )
     verify.set_defaults(func=_verify)
 

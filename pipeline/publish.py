@@ -84,11 +84,12 @@ def require_publishable(report: dict) -> None:
     if not smoke.get("passed"):
         raise ValueError(f"{name} failed its smoke test: {'; '.join(smoke.get('problems', []))}")
     verdict = report.get("gate")
-    if verdict is not None and not verdict.get("passed"):
+    if verdict is not None and not verdict.get("passed") and not (verdict.get("override") or {}).get("reason"):
         raise ValueError(f"{name} failed its decision gate: {'; '.join(verdict.get('problems', []))}")
     if (report.get("recipe") or {}).get("int4_codes") == "gptq":
         if report.get("backend") == "vulkan":
-            if not ((report.get("gate_proxy") or {}).get("gate") or {}).get("passed"):
+            proxy = (report.get("gate_proxy") or {}).get("gate") or {}
+            if not proxy.get("passed") and not (proxy.get("override") or {}).get("reason"):
                 raise ValueError(f"{name} has GPTQ codes and no passing gate proxy (the XNNPACK file from its codes)")
         elif verdict is None:
             raise ValueError(f"{name} has GPTQ codes and no decision gate: verify it with --gate before publishing")
