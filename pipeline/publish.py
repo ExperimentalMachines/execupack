@@ -117,8 +117,77 @@ def require_publishable(report: dict) -> None:
             raise ValueError(f"{name} has GPTQ codes and no decision gate: verify it with --gate before publishing")
 
 
+def require_twin_on_hub(
+    report: dict, by_path: dict[str, dict], existing: list[str], allow_unpublished_twin: bool = False
+) -> None:
+    """A GPTQ Vulkan file publishes only into a head that holds the XNNPACK file its gate proxy
+    names: the same path, and a report of the same window giving the same sha256. Checked
+    against the very revision the commit is pinned to, on every retry, so another publisher
+    replacing the twin in between is caught (codex review, CI round 2). A Vulkan file gated
+    through a twin that is deliberately not published (SmolLM2-360M ships fp32 on XNNPACK)
+    needs ``allow_unpublished_twin``, said out loud."""
+    proxy = report.get("gate_proxy")
+    if report.get("backend") != "vulkan" or not proxy or allow_unpublished_twin:
+        return
+    context = report["window"]["context"]
+    present = any(
+        path.startswith("xnnpack/")
+        and other["window"]["context"] == context
+        and other["files"][0]["sha256"] == proxy.get("sha256")
+        and other["files"][0]["path"] == proxy.get("file")
+        for path, other in by_path.items()
+    )
+    if not present or proxy.get("file") not in existing:
+        raise ValueError(
+            f"{report['files'][0]['path']} is gated through {proxy.get('file')} ({str(proxy.get('sha256'))[:12]}), "
+            "which is not the XNNPACK file of this window on the Hub: publish that twin first, "
+            "or pass --allow-unpublished-twin if it is deliberately not published"
+        )
+
+
+def orphaned_gpu_window(
+    existing: list[str], deleted: set[str], by_path: dict[str, dict], report: dict, label: str
+) -> list[str]:
+    """The Vulkan files of this window that the XNNPACK commit now being built leaves without
+    their gate, judged on the tree the commit produces (codex review, CI rounds 1 to 3): a
+    Vulkan report's gate proxy names its twin by path and sha256, and if that twin was on the
+    Hub and after this commit is gone, or there under other bytes, the Vulkan window goes with
+    it. A proxy naming a file that was never on the Hub (a twin deliberately not published,
+    as SmolLM2-360M's) is not this commit's to judge, and stays."""
+    context = report["window"]["context"]
+    new_path, new_sha = report["files"][0]["path"], report["files"][0]["sha256"]
+    gpu_paths = [
+        p
+        for p in (f"vulkan/{exporting.report_file(context)}", "vulkan/export-report.json")
+        if p in by_path and by_path[p]["window"]["context"] == context
+    ]
+    orphaned = []
+    for gpu_path in gpu_paths:
+        proxy = by_path[gpu_path].get("gate_proxy") or {}
+        twin, twin_sha = proxy.get("file"), proxy.get("sha256")
+        if not twin or twin not in existing:
+            continue
+        if twin == new_path:
+            still_there = twin_sha == new_sha
+        else:
+            still_there = twin not in deleted
+        if not still_there:
+            orphaned.append(gpu_path)
+    if not orphaned:
+        return []
+    files = [
+        p for p in existing if p.startswith("vulkan/") and p.count("/") == 1 and window_of(p.split("/")[1]) == label
+    ]
+    return sorted(set(files) | set(orphaned))
+
+
 def publish_hf(
-    out_dir: Path, backend: str, target: str | None = None, context: int | None = None, attempts: int = 6
+    out_dir: Path,
+    backend: str,
+    target: str | None = None,
+    context: int | None = None,
+    attempts: int = 6,
+    allow_unpublished_twin: bool = False,
 ) -> str:
     """Commit this run's window into its backend folder beside the other windows, plus the
     shared root files; regenerate the folder's config.json and the repo README.md from
@@ -160,11 +229,13 @@ def publish_hf(
         stale = [path for path in existing if superseded(path, folder, label)]
         reports = [report]
         migrated: dict[str, bytes] = {}
+        by_path: dict[str, dict] = {}
         for path in existing:
             if not is_report(path) or (path in stale and not path.endswith("/export-report.json")):
                 continue
             local = hf_hub_download(repo_id, path, revision=info.sha, token=hf.token)
             other = json.loads(Path(local).read_text(encoding="utf-8"))
+            by_path[path] = other
             if path in stale:
                 # A pre-matrix report carries no window in its name. Its window's file stays
                 # unless it is the one this run replaces, so the report moves to the labelled name.
@@ -174,6 +245,20 @@ def publish_hf(
                     json.dumps(other, indent=2).encode() + b"\n"
                 )
             reports.append(other)
+        if folder == "vulkan":
+            require_twin_on_hub(report, by_path, existing, allow_unpublished_twin)
+        # Replacing an XNNPACK window takes with it the Vulkan window whose gate proxy names the
+        # file being replaced: left up, that GPU file would cite a gate no longer on the Hub (a
+        # failed or skipped Vulkan build, an fp32 or rounded rerun). Its new twin, when one is
+        # built, publishes right after this commit (export-xnnpack.yml).
+        orphaned = (
+            orphaned_gpu_window(existing, set(stale) - set(new_paths), by_path, report, label)
+            if folder == "xnnpack"
+            else []
+        )
+        if orphaned:
+            dropped = {id(by_path[p]) for p in orphaned if p in by_path}
+            reports = [r for r in reports if id(r) not in dropped]
         folder_reports = [r for r in reports if _folder(r["backend"], r.get("target")) == folder]
         config = json.dumps(manifest.backend_config(folder_reports), indent=2) + "\n"
         license_files = sorted({f for r in reports for f in r["source"].get("license_files", [])})
@@ -189,11 +274,23 @@ def publish_hf(
         operations += [CommitOperationAdd(path_in_repo=k, path_or_fileobj=v) for k, v in migrated.items()]
         operations += [CommitOperationAdd(path_in_repo=k, path_or_fileobj=str(v)) for k, v in root_files.items()]
         operations.append(CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=readme.encode("utf-8")))
+        message = f"{folder} {label}: {report['source']['id']}@{report['source']['sha'][:12]}"
+        if orphaned:
+            operations += [CommitOperationDelete(path_in_repo=p) for p in orphaned]
+            gpu_reports = [r for r in reports if _folder(r["backend"], r.get("target")) == "vulkan"]
+            if gpu_reports:
+                gpu_config = json.dumps(manifest.backend_config(gpu_reports), indent=2) + "\n"
+                operations.append(
+                    CommitOperationAdd(path_in_repo="vulkan/config.json", path_or_fileobj=gpu_config.encode())
+                )
+            elif "vulkan/config.json" in existing:
+                operations.append(CommitOperationDelete(path_in_repo="vulkan/config.json"))
+            message += f"; withdraws vulkan {label}, whose gate was the file replaced"
         try:
             commit = hf.create_commit(
                 repo_id,
                 operations,
-                commit_message=f"{folder} {label}: {report['source']['id']}@{report['source']['sha'][:12]}",
+                commit_message=message,
                 parent_commit=info.sha,
             )
             return commit.commit_url
@@ -238,13 +335,66 @@ def release_notes(report: dict, hf_url: str | None) -> str:
     return "\n".join(lines) + "\n"
 
 
+def require_twin_on_hub_now(report: dict) -> None:
+    """``require_twin_on_hub`` against the Hub's current head: a release is a mirror of the
+    Hub, so a GPU release goes out only while the twin its gate cites is there (codex review,
+    CI round 3)."""
+    from huggingface_hub import hf_hub_download
+
+    hf = hub.api()
+    info = hf.model_info(report["output_repo"], expand=["sha", "siblings"])
+    existing = [s.rfilename for s in info.siblings or []]
+    by_path = {}
+    for path in existing:
+        if path.startswith("xnnpack/") and is_report(path):
+            local = hf_hub_download(report["output_repo"], path, revision=info.sha, token=hf.token)
+            by_path[path] = json.loads(Path(local).read_text(encoding="utf-8"))
+    require_twin_on_hub(report, by_path, existing)
+
+
+def withdraw_orphaned_gpu_release(report: dict) -> str | None:
+    """After an XNNPACK release is (re)published: the Vulkan release of the same window and
+    source revision, if its gate proxy names this very file under other bytes, cites a gate
+    this release no longer holds, and is deleted (codex review, CI round 3). Returns its tag."""
+    import tempfile
+
+    tag = release_tag({**report, "backend": "vulkan", "target": None})
+    view = subprocess.run(["gh", "release", "view", tag, "--json", "tagName"], capture_output=True, text=True)
+    if view.returncode != 0:
+        # Only a release that is confirmed missing means there is nothing to withdraw; an API,
+        # network or auth failure must not pass for one (codex review, CI round 4).
+        if "release not found" in (view.stderr + view.stdout).lower():
+            return None
+        raise RuntimeError(f"gh release view {tag} failed: {view.stderr.strip()[-500:]}")
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run(
+            ["gh", "release", "download", tag, "--pattern", "export-report-*.json", "--dir", tmp],
+            capture_output=True,
+            check=True,
+        )
+        found = sorted(Path(tmp).glob("export-report-*.json"))
+        proxy = (json.loads(found[0].read_text(encoding="utf-8")).get("gate_proxy") or {}) if found else {}
+    twin = report["files"][0]
+    if proxy.get("file") != twin["path"] or proxy.get("sha256") == twin["sha256"]:
+        return None
+    subprocess.run(["gh", "release", "delete", tag, "--yes", "--cleanup-tag"], check=True)
+    return tag
+
+
 def publish_release(
-    out_dir: Path, backend: str, target: str | None = None, context: int | None = None, attempts: int = 5
+    out_dir: Path,
+    backend: str,
+    target: str | None = None,
+    context: int | None = None,
+    attempts: int = 5,
+    allow_unpublished_twin: bool = False,
 ) -> str:
     """Create (or update) a GitHub release with this window's files under the 2 GiB limit."""
     report = load_report(out_dir, backend, target, context)
     require_publishable(report)
     require_same_bytes(out_dir, report)
+    if backend == "vulkan" and report.get("gate_proxy") and not allow_unpublished_twin:
+        require_twin_on_hub_now(report)
     folder = out_dir / _folder(backend, target)
     tag = release_tag(report)
     label = naming.window_label(report["window"]["context"])
@@ -260,6 +410,8 @@ def publish_release(
     for attempt in range(attempts):
         created = subprocess.run(create, capture_output=True, text=True)
         if created.returncode == 0:
+            if backend == "xnnpack":
+                withdraw_orphaned_gpu_release(report)
             return tag
         output = created.stderr + created.stdout
         if "already exists" in output:
@@ -268,9 +420,15 @@ def publish_release(
             raise RuntimeError(f"gh release create failed: {created.stderr.strip()[-2000:]}")
         time.sleep(30 * (attempt + 1))
     # The release exists (a re-run of the same window, or a create that answered 5xx after
-    # creating it): replace its assets and notes.
+    # creating it): replace its assets and notes, and with them the GPU release they gated.
     subprocess.run(["gh", "release", "upload", tag, "--clobber", *assets], check=True)
-    subprocess.run(["gh", "release", "edit", tag, "--notes", notes], check=True)
+    try:
+        subprocess.run(["gh", "release", "edit", tag, "--notes", notes], check=True)
+    finally:
+        # The assets are replaced already: the GPU release they gated goes even if the notes
+        # edit failed (codex review, CI round 4).
+        if backend == "xnnpack":
+            withdraw_orphaned_gpu_release(report)
     return tag
 
 

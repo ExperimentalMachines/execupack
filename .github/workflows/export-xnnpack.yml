@@ -24,6 +24,10 @@ on:
         description: "Recipe: empty for the config's 8da4w, or fp32 (linears not quantized; the solve only writes the gate's fp32 reference)"
         default: ""
         type: string
+      vulkan:
+        description: Also build each window's Vulkan (GPU) file from the same solved codes, gated through that window's XNNPACK file (GPTQ 8da4w runs of models Vulkan can take)
+        default: true
+        type: boolean
       publish_hf:
         description: Publish to the Hugging Face org in config/pipeline.yaml
         default: true
@@ -58,11 +62,21 @@ jobs:
           CONTEXTS: ${{ inputs.contexts }}
           MODEL_ID: ${{ inputs.model_id }}
           REVISION: ${{ inputs.revision }}
+          VULKAN: ${{ inputs.vulkan }}
+          GPTQ: ${{ inputs.gptq }}
+          QMODE: ${{ inputs.qmode }}
         # One entry per window with the memory its Modal Sandbox asks for (export-matrix over
         # xnnpack.runner_tiers: sizing.host_need_bytes plus modal.memory_margin). A window past
-        # what Modal allows is left out here.
+        # what Modal allows is left out here. With --with-vulkan each entry also says whether
+        # its job builds the Vulkan file (the model can take Vulkan and the window fits Modal),
+        # and asks for whichever of the two exports needs more. Never for a rounded or fp32 run:
+        # a GPU file is built only from solved codes, gated through its XNNPACK twin.
         run: |
-          entries=$(python3 -m pipeline export-matrix "$MODEL_ID" --revision "$REVISION" --backend xnnpack --contexts "$CONTEXTS")
+          WITH_VULKAN=""
+          if [ "$VULKAN" = "true" ] && [ "$GPTQ" = "true" ] && { [ -z "$QMODE" ] || [ "$QMODE" = "8da4w" ]; }; then
+            WITH_VULKAN="--with-vulkan"
+          fi
+          entries=$(python3 -m pipeline export-matrix "$MODEL_ID" --revision "$REVISION" --backend xnnpack --contexts "$CONTEXTS" $WITH_VULKAN)
           echo "$entries"
           echo "entries=$entries" >>"$GITHUB_OUTPUT"
           # The solve holds the fp32 model (16 GB for a 4B) and one layer's Hessians: about 12
@@ -127,6 +141,16 @@ jobs:
     # test through ExecuTorch's C++ runner, then the decision gate against the fp32 model's own
     # answers, and only then does this job publish. They used to be two jobs because the
     # runner fails on aarch64 (finding 30) and the export ran on ARM; on Modal both are x86.
+    #
+    # Then, for a window targets marked (export-matrix --with-vulkan: a GPTQ 8da4w run of a
+    # model Vulkan can take), the Vulkan file, in a Sandbox of its own (vulkan_memory_mib): the
+    # same solved codes in the same torchao linears, with the XNNPACK report just published as
+    # its --gate-proxy. The host has no Vulkan runtime, so that verdict is the one it carries,
+    # and export_xnnpack.check_gate_proxy refuses one built any other way. The CPU file is
+    # published before the GPU Sandbox starts, so a GPU failure or timeout never costs it;
+    # publishing it also withdraws, in the same commit, a Vulkan window whose gate was the file
+    # it replaces (publish.orphaned_gpu_window), so the Hub never holds a GPU file citing a
+    # gate that is not there. A Vulkan failure fails the job at the end.
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
@@ -140,6 +164,8 @@ jobs:
       GPTQ: ${{ inputs.gptq }}
       CONTEXT: ${{ matrix.entry.context }}
       MEMORY_MIB: ${{ matrix.entry.memory_mib }}
+      VULKAN: ${{ matrix.entry.vulkan && 'true' || 'false' }}
+      VULKAN_MEMORY_MIB: ${{ matrix.entry.vulkan_memory_mib }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -156,6 +182,7 @@ jobs:
       # job had: a solved run with no fp32 reference refuses to publish rather than falling
       # through to an unguarded one.
       - name: Export, smoke-test and gate on Modal
+        id: export
         run: |
           echo "ARTIFACT=xnnpack-${MODEL_ID//\//--}-${CONTEXT}" >>"$GITHUB_ENV"
           puts=()
@@ -205,6 +232,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Publish to Hugging Face
+        id: publish_xnnpack
         if: inputs.publish_hf && env.SKIPPED != '1'
         run: |
           if [ -z "$HF_TOKEN" ]; then
@@ -214,7 +242,62 @@ jobs:
           python -m pipeline publish-hf "$WORK_DIR/out" --backend xnnpack
 
       - name: Publish GitHub release
+        id: release_xnnpack
         if: inputs.publish_release && env.SKIPPED != '1'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python -m pipeline publish-release "$WORK_DIR/out" --backend xnnpack
+
+      # Its own Sandbox and its own clock: whatever happens here, the XNNPACK file above is
+      # already out. Exit 4 is the Vulkan export's own size gate (no file for this window).
+      - name: Build the Vulkan file on Modal
+        if: ${{ !cancelled() && env.VULKAN == 'true' && env.SKIPPED != '1' && steps.export.outcome == 'success' && steps.publish_xnnpack.outcome != 'failure' }}
+        timeout-minutes: 130
+        run: |
+          proxy=$(ls "$WORK_DIR"/out/xnnpack/export-report-*.json | head -1)
+          set +e
+          python -m pipeline modal-run --memory-mib "$VULKAN_MEMORY_MIB" --timeout-minutes 120 \
+            --requirements requirements/export-xnnpack.txt \
+            --put "$WORK_DIR/in/codes.pt" --put "$proxy" --get "$WORK_DIR/vulkan-out" \
+            --script 'python -m pipeline export-vulkan "$MODEL_ID" --revision "$REVISION" --context "$CONTEXT" \
+            --out "$OUT" --work "$WORK/vulkan" --codes "$IN/codes.pt" --gate-proxy "$(ls "$IN"/export-report-*.json)"'
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "VULKAN_BUILT=1" >>"$GITHUB_ENV"
+            python -m pipeline summary "$WORK_DIR/vulkan-out" --backend vulkan >>"$GITHUB_STEP_SUMMARY"
+          elif [ "$rc" -eq 4 ]; then
+            echo "::warning title=Vulkan window skipped::$MODEL_ID at $CONTEXT tokens cannot be exported for Vulkan"
+          else
+            echo "VULKAN_FAILED=1" >>"$GITHUB_ENV"
+            echo "::error title=Vulkan export failed::exit $rc; the XNNPACK file is published, this job fails at the end"
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() && (env.VULKAN_BUILT == '1' || env.VULKAN_FAILED == '1') }}
+        with:
+          name: vulkan-${{ env.ARTIFACT }}
+          path: ${{ env.WORK_DIR }}/vulkan-out
+          retention-days: 14
+          if-no-files-found: warn
+
+      # Only once its twin is on the Hub: a GPU file is never published citing a gate that
+      # is not there to read.
+      - name: Publish the Vulkan file to Hugging Face
+        id: publish_vulkan
+        if: ${{ !cancelled() && inputs.publish_hf && env.VULKAN_BUILT == '1' && steps.publish_xnnpack.outcome == 'success' }}
+        run: python -m pipeline publish-hf "$WORK_DIR/vulkan-out" --backend vulkan
+
+      # Likewise only beside its twin's release, and, when the Hub is published to, only once the
+      # GPU file is there too (a skipped step is not a success).
+      - name: Publish the Vulkan GitHub release
+        if: ${{ !cancelled() && inputs.publish_release && env.VULKAN_BUILT == '1' && steps.release_xnnpack.outcome == 'success' && (!inputs.publish_hf || steps.publish_vulkan.outcome == 'success') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m pipeline publish-release "$WORK_DIR/vulkan-out" --backend vulkan
+
+      - name: Fail on a Vulkan export that did not build
+        if: ${{ !cancelled() && env.VULKAN_FAILED == '1' }}
+        run: |
+          echo "::error::the Vulkan export failed after the XNNPACK file was published; see the Vulkan step"
+          exit 1

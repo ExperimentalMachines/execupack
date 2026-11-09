@@ -268,22 +268,51 @@ def _export_matrix(args) -> int:
     else:
         wanted = list(cfg.context_tiers)
 
-    entries = []
-    for window in sorted({int(v) for v in wanted}, reverse=True):
-        need = sizing.host_need_bytes(arch, window, args.backend)
-        tier = export_xnnpack.pick_runner(arch, window, recipe.runner_tiers, args.backend)
+    def sized(window: int, backend: str, tiers) -> dict | None:
+        need = sizing.host_need_bytes(arch, window, backend)
+        tier = export_xnnpack.pick_runner(arch, window, tiers, backend)
         if tier is None:
-            print(f"no runner tier can build a {window}-token window (needs {need:,} B)", file=sys.stderr)
-            continue
+            print(f"{backend}: no runner tier can build a {window}-token window (needs {need:,} B)", file=sys.stderr)
+            return None
         entry = {"context": window, "runner": tier.label, "swap_gib": tier.swap_gib}
         if tier.label == settings.MODAL_TIER:
             # The Sandbox is sized to the window, not the tier: what the estimate needs plus
             # the margin, which pick_runner has already checked is within Modal's ceiling.
             entry["memory_mib"] = remote.memory_request(need, cfg.modal)
             if entry["memory_mib"] is None:
-                print(f"{window} needs more than Modal allows ({need:,} B)", file=sys.stderr)
-                continue
-        print(f"{window}: {tier.label}, needs {need / 2**30:.1f} GiB", file=sys.stderr)
+                print(f"{backend}: {window} needs more than Modal allows ({need:,} B)", file=sys.stderr)
+                return None
+        print(f"{backend} {window}: {tier.label}, needs {need / 2**30:.1f} GiB", file=sys.stderr)
+        return entry
+
+    vulkan_ok = False
+    if args.with_vulkan:
+        # The XNNPACK window job also builds the Vulkan file from the same codes, gated
+        # through the XNNPACK file it has just checked (export-xnnpack.yml). Only for a model
+        # Vulkan can take, and in a Sandbox big enough for whichever of the two needs more.
+        if args.backend != "xnnpack":
+            print("--with-vulkan rides on the xnnpack matrix", file=sys.stderr)
+            return 2
+        from pipeline import eligibility
+
+        verdict = eligibility.evaluate(source, cfg)
+        vulkan_ok = not verdict.reasons and verdict.backends.get("vulkan") is None
+        if not vulkan_ok:
+            print(f"no Vulkan file: {verdict.backends.get('vulkan') or verdict.reasons}", file=sys.stderr)
+
+    entries = []
+    for window in sorted({int(v) for v in wanted}, reverse=True):
+        entry = sized(window, args.backend, recipe.runner_tiers)
+        if entry is None:
+            continue
+        if args.with_vulkan:
+            # The Vulkan file is built in a Sandbox of its own, after the XNNPACK one, so a GPU
+            # failure or timeout never costs the gated CPU file: it gets its own memory. A
+            # window Vulkan cannot be built at gets no GPU file rather than a squeezed one.
+            gpu = sized(window, "vulkan", cfg.vulkan.runner_tiers) if vulkan_ok else None
+            entry["vulkan"] = bool(gpu) and gpu.get("memory_mib") is not None
+            if entry["vulkan"]:
+                entry["vulkan_memory_mib"] = gpu["memory_mib"]
         entries.append(entry)
     print(json.dumps(entries))
     return 0
@@ -356,7 +385,15 @@ def _export_qnn(args) -> int:
 def _publish_hf(args) -> int:
     from pipeline import publish
 
-    print(publish.publish_hf(Path(args.out), args.backend, args.target, args.context))
+    print(
+        publish.publish_hf(
+            Path(args.out),
+            args.backend,
+            args.target,
+            args.context,
+            allow_unpublished_twin=getattr(args, "allow_unpublished_twin", False),
+        )
+    )
     return 0
 
 
@@ -374,7 +411,15 @@ def _correct_reports(args) -> int:
 def _publish_release(args) -> int:
     from pipeline import publish
 
-    print(publish.publish_release(Path(args.out), args.backend, args.target, args.context))
+    print(
+        publish.publish_release(
+            Path(args.out),
+            args.backend,
+            args.target,
+            args.context,
+            allow_unpublished_twin=getattr(args, "allow_unpublished_twin", False),
+        )
+    )
     return 0
 
 
@@ -564,6 +609,11 @@ def main(argv: list[str] | None = None) -> int:
     export_matrix.add_argument("--revision", default="main")
     export_matrix.add_argument("--backend", default="vulkan", choices=["vulkan", "xnnpack"])
     export_matrix.add_argument("--contexts", default="", help="JSON or comma-separated windows; empty for every tier")
+    export_matrix.add_argument(
+        "--with-vulkan",
+        action="store_true",
+        help="xnnpack only: mark each window whose job can also build the Vulkan file, and size it for both",
+    )
     export_matrix.set_defaults(func=_export_matrix)
 
     solve_memory = commands.add_parser("solve-memory", help="MiB to request for the GPTQ solve on Modal")
@@ -616,6 +666,12 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--backend", required=True, choices=["xnnpack", "vulkan", "qnn", "mtk"])
         command.add_argument("--target", default=None)
         command.add_argument("--context", type=int, default=None, help="which window, when the folder holds several")
+        if name in ("publish-hf", "publish-release"):
+            command.add_argument(
+                "--allow-unpublished-twin",
+                action="store_true",
+                help="publish a GPTQ Vulkan file whose gate-proxy XNNPACK twin is deliberately not on the Hub",
+            )
         command.set_defaults(func=func)
 
     args = parser.parse_args(argv)

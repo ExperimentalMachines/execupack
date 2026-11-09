@@ -140,14 +140,36 @@ kernels and the runner no GPU, so the check is structural (`smoke.structural_che
   gate must also have passed or been accepted. The proxy is recorded in the Vulkan report,
   and `publish` refuses a GPTQ Vulkan file without one. Why: round to nearest kept none of
   Phi-4-mini's 8 graded tool calls (mean 0.05 against fp32's 0.66, measured on an XNNPACK
-  file with the same quantization). The `export-vulkan` workflow does not pass `--codes`
-  yet, so CI's Vulkan files are still round to nearest.
+  file with the same quantization).
+- **Built in the XNNPACK window job** (2026-11-09): `export-xnnpack.yml` builds each window's
+  Vulkan file right after that window's XNNPACK file has passed its gate and been published,
+  from the same `codes.pt`, with that report as `--gate-proxy`, in a Modal Sandbox of its own
+  (`vulkan_memory_mib`, 120 minutes), and publishes it only once its twin is on the Hub. A
+  Vulkan failure or timeout therefore never costs the CPU file, and fails the job at the end.
+  `export-matrix --with-vulkan` marks the windows that get one (the model can take Vulkan and
+  the window can be sized). Only GPTQ 8da4w runs build one: a rounded or fp32 run gets no GPU
+  file. Publishing an XNNPACK window withdraws, in the same Hub commit, a Vulkan window whose
+  gate proxy names, by path and sha256, a twin this commit removes or replaces with other bytes
+  (`publish.orphaned_gpu_window`, judged on the tree the commit produces), so a failed or
+  skipped GPU rebuild leaves no GPU file citing a gate that is gone. A GPTQ Vulkan publish in turn requires the head it
+  commits onto to hold the very XNNPACK file its proxy names (`publish.require_twin_on_hub`,
+  re-checked on every retry); `publish-hf --allow-unpublished-twin` is the explicit way past it
+  for a twin deliberately not published, as SmolLM2-360M's is. GitHub releases follow the Hub:
+  a GPU release needs its twin on the Hub at release time, and re-releasing an XNNPACK window
+  under other bytes deletes the GPU release of that window whose proxy named the old ones.
+  Limits: releases are per source revision, so an older revision's GPU release stays beside its
+  own XNNPACK release while the Hub moves on; and the check-then-release is not atomic against a
+  second publisher acting by hand at the same moment (CI runs one model at a time). `export-vulkan.yml` is gone, and the watcher has no Vulkan stage (`watch.BUILT_WITH`):
+  a workflow of its own could only solve again, giving the CPU and GPU files different codes,
+  or round to nearest, which is what every Vulkan file it built was.
 - **Runners, per window** (2026-10-04): the export peak grows with the window squared (the
   same per-layer causal masks as XNNPACK), so one fixed 8vcpu runner could not carry any 32k
-  window of Qwen3, Qwen2.5 or Llama-3.2-3B. The `targets` job runs `export-matrix`, which
-  gives each window the smallest x86 tier in `vulkan.runner_tiers` that holds
+  window of Qwen3, Qwen2.5 or Llama-3.2-3B. The `targets` job ran `export-matrix`, which
+  gave each window the smallest x86 tier in `vulkan.runner_tiers` that holds
   `sizing.host_need_bytes(..., "vulkan")` in RAM, or, when none can, the tier with the most
-  RAM that holds it with swap. The job gates on the same number.
+  RAM that holds it with swap. Since 2026-11-09 the same choice is made by the XNNPACK
+  workflow's `export-matrix --with-vulkan`, as each window's `vulkan_memory_mib` for its
+  Vulkan Sandbox (the tier is Modal's); a window it cannot size gets no Vulkan file.
 - **Vulkan memory, measured** (50 exports: Qwen3 0.6B/1.7B/4B/4B-2507, Qwen2.5 0.5B/1.5B/
   Math-1.5B/3B, Llama 3.2 1B/3B, each at 2k-32k, all published): against the XNNPACK
   estimate the peak was 0.76-0.97x up to 8k, 0.99-1.55x at 16k and 1.54-2.13x at 32k, so the
@@ -450,14 +472,30 @@ G5, Dimensity 9300+, Exynos 2500; GSM8K, RetrievalQA, IFEval, PopQA, BFCL, Fresh
   that cannot fit is refused. That guard was in place and did not fire for Qwen3-1.7B at
   32k, because the estimate it gates on was itself too low; see the headroom factor above.
 
-- **Eleven of the sixteen published repositories are round to nearest, not GPTQ**: both
-  Llama-3.2, all four Qwen2.5, Qwen3-0.6B, Qwen3-4B, Qwen3-4B-Instruct-2507 and both
-  SmolLM2. Only the four LFM2.5 repositories and Qwen3-1.7B carry solved codes. Round to
-  nearest is what took LFM2.5's tool-call recall from 49 percent to 10. `python -m pipeline
-  audit <model>` gates a published file against its fp32 source without rebuilding it, so
-  this can be measured without a solve per model; its first run found
-  SmolLM2-135M-Instruct-ExecuTorch failing, at 0.190 against fp32's 0.583 over the four
-  rows fp32 is confident on, with the quiet rows untouched.
+- **No round-to-nearest CPU or GPU file is published** (2026-11-09). The XNNPACK folders had
+  been re-exported with GPTQ by October; every Vulkan folder was still round to nearest, because
+  the Vulkan export had never taken codes. On 2026-11-09 the 13 repos with a Vulkan folder were
+  rebuilt by hand on EC2 from main c01c60e: per model one solve (Qwen3-4B-Thinking-2507 reused
+  the solve its XNNPACK files came from), and per window an XNNPACK twin from those codes
+  (gated, published) and a Vulkan file with the twin as its gate proxy (published). Before each publish, a byte check read every int4 linear out of the `.pte`
+  through the delegate's own fully-connected (XNNPACK) or `linear_dq8ca_q4gsw` (Vulkan) ops in
+  execution order and required it to equal `codes.pt`, codes and scales, and the report to name
+  that `codes.pt` by sha256. Afterwards every Hub file's sha256 was matched to a byte-checked
+  file, every Vulkan proxy to the published twin and its verdict, and every XNNPACK verdict to
+  the model's own `gate.json`. The tools (`codesmatch.py`, `ptecodes.py`, `verify_hub.py`)
+  are not in this repository yet. Exceptions, decided by hand:
+  - Qwen3-0.6B: int4 does not keep its tool decision (research finding 43), so its XNNPACK
+    files are fp32 linears (gated: 4 of 4, 0.618 against fp32's 0.619) and its Vulkan folder
+    was withdrawn (repo commit d60f655).
+  - SmolLM2-360M: XNNPACK stays fp32 (its 1.4.0 GPTQ file failed the gate); the GPTQ Vulkan
+    files are gated through an XNNPACK twin that passed (2 of 2 graded rows, 0.555 against
+    0.570) but was not published, so their proxy names a file that is not on the Hub.
+  From then on CI builds Vulkan files the same way, in the XNNPACK window job (Vulkan section).
+- **Gates before 2026-10-31 did not measure Qwen3's decision.** A gate run before `6ee6b36`
+  (reasoning switched off) graded `<think>` at 0.9999 on every row, so every Qwen3 file built
+  before then passed whatever its weights. `python -m pipeline audit Qwen/Qwen3-0.6B --context
+  2048` on the published October GPTQ file: 0 of 4 calls kept, 0.086 against fp32's 0.619.
+  The 2026-11-09 rebuilds replaced every such Qwen3 file with one gated the corrected way.
 
 - The watcher checks each repo once. A model whose weights change after it was seen
   (a new commit on `main`) is not re-exported automatically: most upstream commits touch

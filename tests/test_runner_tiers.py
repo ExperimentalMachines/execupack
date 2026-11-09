@@ -1,4 +1,4 @@
-"""Per-window runner choice for the export_llm backends (export-vulkan.yml's matrix), on a
+"""Per-window runner choice for the export_llm backends (export-xnnpack.yml's matrix), on a
 three-size fleet; what the configured tier itself carries is test_namespace_runner.py."""
 
 import pytest

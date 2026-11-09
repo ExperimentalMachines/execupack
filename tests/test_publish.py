@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -330,3 +331,219 @@ def test_a_release_never_attaches_a_model_file_its_report_does_not_list(tmp_path
     monkeypatch.setattr(publish.subprocess, "run", lambda *a, **k: pytest.fail("reached gh"))
     with pytest.raises(ValueError, match="renamed.pte.*not in the report"):
         publish.publish_release(out, "xnnpack")
+
+
+def publish_over(tmp_path, monkeypatch, remote, new_sha=None):
+    """Publish a new xnnpack 4k window over ``remote``; return (deleted, added, message)."""
+    out = tmp_path / "out"
+    (out / "xnnpack").mkdir(parents=True)
+    (out / "tokenizer.json").write_text("{}")
+    new = report(4096)
+    if new_sha:
+        new["files"][0]["sha256"] = new_sha
+    (out / "xnnpack" / "Qwen3-1.7B-8da4w-4k.pte").write_bytes(b"pte")
+    (out / "xnnpack" / "export-report-4k.json").write_text(json.dumps(new))
+    (out / "xnnpack" / "config.json").write_text(json.dumps(manifest.backend_config(new)))
+    hub = FakeHub(remote)
+    monkeypatch.setattr(publish.hub, "api", lambda: hub)
+
+    def fake_download(repo_id, path, revision, token):
+        local = tmp_path / "dl" / path
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(json.dumps(remote[path]))
+        return str(local)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    monkeypatch.setattr(publish, "require_same_bytes", lambda out_dir, report: None)
+    publish.publish_hf(out, "xnnpack")
+    [(operations, message, _)] = hub.commits
+    deleted = sorted(op.path_in_repo for op in operations if type(op).__name__ == "CommitOperationDelete")
+    added = {op.path_in_repo: op for op in operations if type(op).__name__ == "CommitOperationAdd"}
+    return deleted, added, message
+
+
+def gpu(context, twin_sha):
+    r = report(context, backend="vulkan")
+    r["gate_proxy"] = {"file": f"xnnpack/Qwen3-1.7B-8da4w-{context // 1024}k.pte", "sha256": twin_sha}
+    return r
+
+
+def remote_with_gpu(proxy_4k):
+    old = report(4096)
+    old["files"][0]["sha256"] = "old-xnnpack-4k"
+    return {
+        "README.md": None,
+        "xnnpack/Qwen3-1.7B-8da4w-4k.pte": None,
+        "xnnpack/export-report-4k.json": old,
+        "xnnpack/config.json": None,
+        "vulkan/Qwen3-1.7B-8da4w-4k.pte": None,
+        "vulkan/export-report-4k.json": gpu(4096, proxy_4k),
+        "vulkan/Qwen3-1.7B-8da4w-8k.pte": None,
+        "vulkan/export-report-8k.json": gpu(8192, "xnnpack-8k"),
+        "vulkan/config.json": None,
+    }
+
+
+def test_replacing_an_xnnpack_window_withdraws_the_vulkan_window_gated_through_it(tmp_path, monkeypatch):
+    deleted, added, message = publish_over(tmp_path, monkeypatch, remote_with_gpu("old-xnnpack-4k"))
+    assert deleted == ["vulkan/Qwen3-1.7B-8da4w-4k.pte", "vulkan/export-report-4k.json"]
+    assert "withdraws vulkan 4k" in message
+    # The other Vulkan window stays, and the folder's config and the README forget the 4k one.
+    config = json.loads(added["vulkan/config.json"].path_or_fileobj)
+    assert [v["context"] for v in config["variants"]] == [8192]
+    readme = added["README.md"].path_or_fileobj.decode()
+    assert "vulkan/Qwen3-1.7B-8da4w-8k.pte" in readme and "vulkan/Qwen3-1.7B-8da4w-4k.pte" not in readme
+
+
+@pytest.mark.parametrize("case", ["unpublished-twin", "same-file"])
+def test_a_vulkan_window_whose_twin_survives_the_commit_stays(tmp_path, monkeypatch, case):
+    if case == "unpublished-twin":
+        # SmolLM2-360M: gated through a GPTQ build that was never on the Hub (its CPU files are fp32).
+        remote = remote_with_gpu("never-published")
+        remote["vulkan/export-report-4k.json"]["gate_proxy"]["file"] = "xnnpack/Qwen3-1.7B-8da4w-gptq-4k.pte"
+        new_sha = None
+    else:
+        # The very file being republished: same path, same bytes.
+        remote, new_sha = remote_with_gpu("same-bytes"), "same-bytes"
+    deleted, added, message = publish_over(tmp_path, monkeypatch, remote, new_sha=new_sha)
+    assert not any(p.startswith("vulkan/") for p in deleted) and "withdraws" not in message
+    assert "vulkan/config.json" not in added
+
+
+def publish_gpu(tmp_path, monkeypatch, remote, **kwargs):
+    """Publish a GPTQ Vulkan 4k window gated through xnnpack 4k sha 'twin-4k' over ``remote``."""
+    out = tmp_path / "gpu-out"
+    (out / "vulkan").mkdir(parents=True, exist_ok=True)
+    new = gpu(4096, "twin-4k")
+    (out / "vulkan" / "Qwen3-1.7B-8da4w-4k.pte").write_bytes(b"pte")
+    (out / "vulkan" / "export-report-4k.json").write_text(json.dumps(new))
+    (out / "vulkan" / "config.json").write_text(json.dumps(manifest.backend_config(new)))
+    hub = FakeHub(remote)
+    monkeypatch.setattr(publish.hub, "api", lambda: hub)
+
+    def fake_download(repo_id, path, revision, token):
+        local = tmp_path / "dl" / path
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(json.dumps(remote[path]))
+        return str(local)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    return publish.publish_hf(out, "vulkan", **kwargs), hub
+
+
+def remote_twin(sha):
+    twin = report(4096)
+    twin["files"][0]["sha256"] = sha
+    return {"xnnpack/Qwen3-1.7B-8da4w-4k.pte": None, "xnnpack/export-report-4k.json": twin, "README.md": None}
+
+
+def test_a_vulkan_file_publishes_only_beside_the_twin_its_proxy_names(tmp_path, monkeypatch):
+    url, hub = publish_gpu(tmp_path, monkeypatch, remote_twin("twin-4k"))
+    assert url == "https://hf/commit/1" and len(hub.commits) == 1
+
+
+def test_a_vulkan_file_whose_twin_was_replaced_meanwhile_is_refused(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match="not the XNNPACK file of this window on the Hub"):
+        publish_gpu(tmp_path, monkeypatch, remote_twin("someone-else-replaced-it"))
+    with pytest.raises(ValueError, match="publish that twin first"):
+        publish_gpu(tmp_path, monkeypatch, {"README.md": None})
+    # A twin that is deliberately not published (SmolLM2-360M) is said out loud.
+    url, _ = publish_gpu(tmp_path, monkeypatch, {"README.md": None}, allow_unpublished_twin=True)
+    assert url == "https://hf/commit/1"
+
+
+def test_a_pre_matrix_xnnpack_report_still_withdraws_the_vulkan_window_it_gated(tmp_path, monkeypatch):
+    remote = remote_with_gpu("old-xnnpack-4k")
+    old = remote.pop("xnnpack/export-report-4k.json")
+    remote["xnnpack/export-report.json"] = old  # the unlabelled report of an older layout
+    deleted, _, message = publish_over(tmp_path, monkeypatch, remote)
+    assert "vulkan/Qwen3-1.7B-8da4w-4k.pte" in deleted and "withdraws vulkan 4k" in message
+
+
+def test_a_replaced_twin_takes_its_vulkan_window_with_it_even_without_its_report(tmp_path, monkeypatch):
+    # Judged on the tree the commit produces, not on old reports: the proxy's file is replaced.
+    remote = remote_with_gpu("old-xnnpack-4k")
+    del remote["xnnpack/export-report-4k.json"]
+    deleted, _, message = publish_over(tmp_path, monkeypatch, remote)
+    assert "vulkan/Qwen3-1.7B-8da4w-4k.pte" in deleted and "withdraws vulkan 4k" in message
+
+
+def test_the_same_bytes_under_another_name_still_withdraw_the_vulkan_window(tmp_path, monkeypatch):
+    # The proxy names a path this commit deletes; matching the sha alone would have kept it.
+    remote = remote_with_gpu(hashlib.sha256(b"pte").hexdigest())
+    remote["vulkan/export-report-4k.json"]["gate_proxy"]["file"] = "xnnpack/Qwen3-1.7B-8da4w-old-name-4k.pte"
+    remote["xnnpack/Qwen3-1.7B-8da4w-old-name-4k.pte"] = None
+    deleted, _, message = publish_over(tmp_path, monkeypatch, remote)
+    assert "xnnpack/Qwen3-1.7B-8da4w-old-name-4k.pte" in deleted and "vulkan/export-report-4k.json" in deleted
+
+
+class FakeGh:
+    """`gh release view/download/delete` for one Vulkan release holding one report."""
+
+    def __init__(self, gpu_report=None):
+        self.gpu_report = gpu_report
+        self.calls = []
+
+    def run(self, command, **kwargs):
+        self.calls.append(command[:3])
+        if command[:3] == ["gh", "release", "view"]:
+            if self.gpu_report == "api-error":
+                return SimpleNamespace(returncode=1, stdout="", stderr="HTTP 502: Bad Gateway")
+            if self.gpu_report is None:
+                return SimpleNamespace(returncode=1, stdout="", stderr="release not found")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:3] == ["gh", "release", "download"]:
+            directory = command[command.index("--dir") + 1]
+            (Path(directory) / "export-report-4k.json").write_text(json.dumps(self.gpu_report))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:3] == ["gh", "release", "delete"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(command)
+
+
+@pytest.mark.parametrize(
+    ("gpu_report", "withdrawn"),
+    [
+        (None, False),  # no GPU release for this window
+        (gpu(4096, hashlib.sha256(b"pte").hexdigest()), False),  # gated through these very bytes
+        (gpu(4096, "older-bytes"), True),  # gated through this file before it was re-released
+        ({**gpu(4096, "older-bytes"), "gate_proxy": {"file": "xnnpack/other.pte", "sha256": "x"}}, False),
+    ],
+)
+def test_re_releasing_an_xnnpack_window_withdraws_only_the_gpu_release_it_gated(monkeypatch, gpu_report, withdrawn):
+    gh = FakeGh(gpu_report)
+    monkeypatch.setattr(publish.subprocess, "run", gh.run)
+    tag = publish.withdraw_orphaned_gpu_release(report(4096))
+    assert (tag == "Qwen3-1.7B-vulkan-4k-abcdef0") is withdrawn
+    assert (["gh", "release", "delete"] in gh.calls) is withdrawn
+
+
+def test_a_gpu_release_needs_its_twin_on_the_hub(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    (out / "vulkan").mkdir(parents=True)
+    (out / "tokenizer.json").write_text("{}")
+    (out / "vulkan" / "Qwen3-1.7B-8da4w-4k.pte").write_bytes(b"pte")
+    (out / "vulkan" / "export-report-4k.json").write_text(json.dumps(gpu(4096, "twin-4k")))
+    checked = []
+
+    def missing_twin(report):
+        checked.append(report["files"][0]["path"])
+        raise ValueError("not the XNNPACK file of this window on the Hub")
+
+    monkeypatch.setattr(publish, "require_twin_on_hub_now", missing_twin)
+    with pytest.raises(ValueError, match="not the XNNPACK file"):
+        publish.publish_release(out, "vulkan")
+    assert checked == ["vulkan/Qwen3-1.7B-8da4w-4k.pte"]
+    # Said out loud, it goes past the check (to gh, which this test stops at).
+    monkeypatch.setattr(publish.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    assert publish.publish_release(out, "vulkan", allow_unpublished_twin=True) == "Qwen3-1.7B-vulkan-4k-abcdef0"
+
+
+def test_an_unreadable_gpu_release_is_an_error_not_an_absent_one(monkeypatch):
+    monkeypatch.setattr(publish.subprocess, "run", FakeGh("api-error").run)
+    with pytest.raises(RuntimeError, match="gh release view"):
+        publish.withdraw_orphaned_gpu_release(report(4096))
