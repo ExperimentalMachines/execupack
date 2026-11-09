@@ -258,3 +258,19 @@ def test_a_report_that_failed_its_decision_gate_is_never_published(tmp_path, mon
     monkeypatch.setattr(publish.hub, "api", lambda: pytest.fail("reached the Hub"))
     with pytest.raises(ValueError, match="failed its decision gate: kept fp32's choice on 7 of 8"):
         publish.publish_hf(out, "xnnpack")
+
+
+def test_a_gptq_file_needs_its_own_gate_or_for_vulkan_a_passing_proxy():
+    gptq = {"int4_codes": "gptq", "label": "x", "description": "x"}
+    cpu = {**report(2048), "recipe": gptq}
+    with pytest.raises(ValueError, match="no decision gate"):
+        publish.require_publishable(cpu)
+    publish.require_publishable({**cpu, "gate": {"passed": True}})
+    gpu = {**report(2048, backend="vulkan"), "recipe": gptq}
+    with pytest.raises(ValueError, match="no passing gate proxy"):
+        publish.require_publishable(gpu)
+    with pytest.raises(ValueError, match="no passing gate proxy"):
+        publish.require_publishable({**gpu, "gate_proxy": {"gate": {"passed": False}}})
+    publish.require_publishable({**gpu, "gate_proxy": {"gate": {"passed": True}}})
+    # Round to nearest has no fp32 reference to be gated against, as before.
+    publish.require_publishable({**report(2048, backend="vulkan"), "recipe": {"int4_codes": "round-to-nearest"}})

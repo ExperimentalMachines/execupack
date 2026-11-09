@@ -113,17 +113,25 @@ def linear_bytes_per_param(qmode: str) -> float:
         raise ValueError(f"no size model for qmode {qmode!r}; known: {sorted(LINEAR_BYTES_PER_PARAM)}") from None
 
 
-def pte_bytes_estimate(arch: Architecture, context: int, qmode: str = "8da4w") -> int:
+def pte_bytes_estimate(arch: Architecture, context: int, qmode: str = "8da4w", output_bits: int = 4) -> int:
+    """``output_bits`` 8 prices the output head at one byte per weight (int8 per channel,
+    XnnpackPlan.output_bits) instead of the int4 rate every other linear is at."""
+    per_param = linear_bytes_per_param(qmode)
+    head = arch.vocab_size * arch.dim
+    head_extra = head * (EMBEDDING_BYTES_PER_PARAM_INT8 - per_param) if qmode == "8da4w" and output_bits == 8 else 0
     raw = (
         arch.embedding_params * EMBEDDING_BYTES_PER_PARAM_INT8
-        + arch.linear_params * linear_bytes_per_param(qmode)
+        + arch.linear_params * per_param
+        + head_extra
         + context * arch.head_dim * ROPE_TABLE_BYTES_PER_TOKEN_PER_HEAD_DIM
     )
     return int(raw * PTE_OVERHEAD_FACTOR)
 
 
-def device_resident_bytes(arch: Architecture, context: int, overhead: int, qmode: str = "8da4w") -> int:
-    return pte_bytes_estimate(arch, context, qmode) + kv_cache_bytes(arch, context) + overhead
+def device_resident_bytes(
+    arch: Architecture, context: int, overhead: int, qmode: str = "8da4w", output_bits: int = 4
+) -> int:
+    return pte_bytes_estimate(arch, context, qmode, output_bits) + kv_cache_bytes(arch, context) + overhead
 
 
 def causal_mask_bytes(arch: Architecture, context: int) -> int:

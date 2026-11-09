@@ -68,6 +68,7 @@ def quantizer(upstream, codes: dict, output_int8: bool):
     and for ``output_int8`` the output head at int8 per channel rather than int4."""
     import torch
 
+    codes_given = bool(codes)
     if output_int8:
         # The head is not int4 here, so its int4 codes have nowhere to go.
         codes = {k: v for k, v in codes.items() if k != "output"}
@@ -93,9 +94,15 @@ def quantizer(upstream, codes: dict, output_int8: bool):
                 )
             quantised.output = head
             print("output head quantized to int8 per channel")
-        if not codes:
+        if not codes_given:
             return quantised
-        injected, _ = inject(quantised, codes)
+        injected, left = inject(quantised, codes)
+        # And every int4 tensor must have its code: a partial codes file would otherwise
+        # export, be labelled GPTQ, and carry the rest rounded (codex review, 2026-11-09). The
+        # int8 head has no int4 code by design.
+        rounded = [n for n in left if not (output_int8 and n == "output")]
+        if rounded:
+            raise ValueError(f"no solved codes for {len(rounded)} int4 linears: {rounded[:5]}")
         # Every code must find its tensor. If the solve was run against a different
         # checkpoint, or a name moved, the export would otherwise finish, be labelled GPTQ,
         # and carry weights that were quietly rounded instead.

@@ -110,3 +110,49 @@ def test_an_fp32_report_does_not_claim_int4_weights():
     gptq = export_xnnpack.recipe_fields(cfg.xnnpack, "8da4w-gptq", True, "xnnpack", 2048)
     assert rtn["int4_codes"] == "round-to-nearest" and gptq["int4_codes"] == "gptq"
     assert "4-bit weights in groups of" in rtn["description"] and rtn["group_size"] == cfg.xnnpack.group_size
+
+
+def _proxy(tmp_path, **changes):
+    import json
+
+    report = {
+        "backend": "xnnpack",
+        "source": {"sha": "a" * 40},
+        "window": {"context": 8192},
+        "recipe": {"codes_sha256": "c0de", "output_head": "int8 per channel"},
+        "gate": {"passed": True, "graded": 8, "agreed": 8, "fp32_mean": 0.66, "export_mean": 0.53},
+        "files": [{"path": "xnnpack/x-8k.pte", "sha256": "ff"}],
+    }
+    for key, value in changes.items():
+        report[key] = value
+    path = tmp_path / "export-report-8k.json"
+    path.write_text(json.dumps(report))
+    return path
+
+
+def test_a_gate_proxy_counts_only_for_the_same_revision_window_codes_and_head(tmp_path):
+    from pipeline import export_xnnpack
+
+    ok = export_xnnpack.check_gate_proxy(_proxy(tmp_path), "a" * 40, 8192, "c0de", 8)
+    assert ok["gate"]["passed"] and ok["file"] == "xnnpack/x-8k.pte"
+    for changes, args, match in (
+        ({}, ("b" * 40, 8192, "c0de", 8), "another source revision"),
+        ({}, ("a" * 40, 4096, "c0de", 8), "window is 8192"),
+        ({}, ("a" * 40, 8192, "beef", 8), "other codes"),
+        ({}, ("a" * 40, 8192, "c0de", 4), "output head differs"),
+        ({"gate": {"passed": False}}, ("a" * 40, 8192, "c0de", 8), "did not pass"),
+        ({"backend": "vulkan"}, ("a" * 40, 8192, "c0de", 8), "vulkan report"),
+    ):
+        with pytest.raises(export_xnnpack.ExportError, match=match):
+            export_xnnpack.check_gate_proxy(_proxy(tmp_path, **changes), *args)
+    with pytest.raises(export_xnnpack.ExportError, match="needs --gate-proxy"):
+        export_xnnpack.check_gate_proxy(None, "a" * 40, 8192, "c0de", 8)
+
+
+def test_an_int8_head_is_priced_at_a_byte_a_weight(source):
+    from pipeline import families, sizing
+
+    arch = families.architecture(source("microsoft/Phi-4-mini-instruct").config, 3_836_021_760)
+    four, eight = sizing.pte_bytes_estimate(arch, 2048), sizing.pte_bytes_estimate(arch, 2048, output_bits=8)
+    head = 200_064 * 3072
+    assert 0.4 * head < eight - four < 0.5 * head  # (1 - 0.5625) bytes per weight, plus overhead

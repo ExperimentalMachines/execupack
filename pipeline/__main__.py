@@ -127,6 +127,7 @@ def _export_vulkan(args) -> int:
             context=args.context,
             keep_work=args.keep_work,
             codes=Path(args.codes) if args.codes else None,
+            gate_proxy=Path(args.gate_proxy) if args.gate_proxy else None,
             backend="vulkan",
         )
     )
@@ -488,6 +489,11 @@ def main(argv: list[str] | None = None) -> int:
         "--codes",
         default=None,
         help="codes.pt from `solve`; without it the int4 weights are rounded to nearest",
+    )
+    vulkan.add_argument(
+        "--gate-proxy",
+        default=None,
+        help="with --codes: the XNNPACK export-report-<window>.json from the same codes that passed its gate",
     )
     vulkan.set_defaults(func=_export_vulkan)
 
