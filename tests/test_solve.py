@@ -150,3 +150,27 @@ def test_injection_refuses_a_scale_that_is_not_finite():
         codes = {"linear": {"qdata": torch.zeros(4, 32, dtype=torch.int8), "scale": bad}}
         with pytest.raises(ValueError, match="not finite"):
             export_with_codes.inject(Module(), codes)
+
+
+def test_an_int8_output_head_is_int8_per_channel_and_takes_no_int4_codes():
+    pytest.importorskip("executorch.examples.models.llama.source_transformation.quantize")
+    from executorch.examples.models.llama.source_transformation.quantize import quantize as upstream
+
+    from pipeline import export_with_codes
+
+    class Tiny(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.wq = torch.nn.Linear(64, 64, bias=False)
+            self.output = torch.nn.Linear(64, 128, bias=False)
+
+    model = Tiny()
+    head = model.output.weight.detach().clone()
+    # The head's int4 codes are dropped rather than injected into an int8 tensor.
+    codes = {"output": {"qdata": torch.zeros(128, 64, dtype=torch.int8), "scale": torch.ones(128, 2)}}
+    out = export_with_codes.quantizer(upstream, codes, output_int8=True)(model, "8da4w", group_size=32)
+    w4, w8 = out.wq.weight, out.output.weight
+    assert int(w4.qdata.min()) >= -8 and int(w4.qdata.max()) <= 7 and tuple(w4.scale.shape) == (64, 2)
+    assert tuple(w8.scale.reshape(128, -1).shape) == (128, 1)  # one scale per output channel
+    assert int(w8.qdata.max()) > 7  # the full int8 range, not the int4 grid
+    assert float((w8.dequantize() - head).abs().max()) < float(head.abs().max()) / 100

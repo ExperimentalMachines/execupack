@@ -126,6 +126,7 @@ def _export_vulkan(args) -> int:
             Path(args.work),
             context=args.context,
             keep_work=args.keep_work,
+            codes=Path(args.codes) if args.codes else None,
             backend="vulkan",
         )
     )
@@ -479,6 +480,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     vulkan.add_argument(
         "--keep-work", action="store_true", help="keep the work dir after success (a failure always leaves it)"
+    )
+    # The Vulkan delegate runs the same torchao Int8DynamicActivationIntxWeight linears as
+    # XNNPACK, so the solve's codes go in the same way. There is no Vulkan runtime on the
+    # host to gate the file, so its gate is the XNNPACK file solved from the same codes.
+    vulkan.add_argument(
+        "--codes",
+        default=None,
+        help="codes.pt from `solve`; without it the int4 weights are rounded to nearest",
     )
     vulkan.set_defaults(func=_export_vulkan)
 

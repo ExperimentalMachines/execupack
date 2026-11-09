@@ -367,6 +367,9 @@ class XnnpackPlan:
     model_class: str
     params: dict
     converter: str  # key into pipeline.convert.CONVERTERS
+    # Bits for the output head's weights in an 8da4w export: 4 like every other linear,
+    # or 8 (per channel) where the int4 head is what costs the model its decisions.
+    output_bits: int = 4
 
     @property
     def lfm3(self) -> bool:
@@ -507,7 +510,13 @@ def _phi4_mini_plan(c: dict, params: dict) -> XnnpackPlan:
     )
     if scaling.get("attention_factor") is not None:
         params["rope_scaling_attention_factor"] = float(scaling["attention_factor"])
-    return XnnpackPlan("phi_4_mini", params, "phi4")
+    # The output head stays at 8 bits. Measured 2026-11-09 on the gate's prompts, eager, against
+    # fp32 (scratchpad expt.py): every linear int4 with GPTQ codes kept 7 of 8 tool calls at a
+    # mean of 0.457 against fp32's 0.663 -- the published recipe, and the .pte agreed (0.452) --
+    # while the same with the head left in fp32 kept 8 of 8 at 0.521. Phi-4-mini's head is its
+    # tied 200,064 x 3072 embedding, a sixth of the model, and fp32 itself is unsure on these
+    # rows (0.40 to 0.78), so the head's rounding is enough to tip one.
+    return XnnpackPlan("phi_4_mini", params, "phi4", output_bits=8)
 
 
 def _lfm3_plan(c: dict) -> XnnpackPlan:

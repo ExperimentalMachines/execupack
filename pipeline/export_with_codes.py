@@ -63,6 +63,52 @@ def inject(model, codes: dict, log=print) -> tuple[int, list[str]]:
     return injected, left
 
 
+def quantizer(upstream, codes: dict, output_int8: bool):
+    """``upstream`` (source_transformation.quantize.quantize) with the solved codes put in,
+    and for ``output_int8`` the output head at int8 per channel rather than int4."""
+    import torch
+
+    if output_int8:
+        # The head is not int4 here, so its int4 codes have nowhere to go.
+        codes = {k: v for k, v in codes.items() if k != "output"}
+
+    def quantize(model, qmode, *rest, **kwargs):
+        if qmode != "8da4w":
+            return upstream(model, qmode, *rest, **kwargs)
+        head = None
+        if output_int8:
+            # Hidden from the int4 pass, which takes every nn.Linear, then given int8 weights
+            # per channel with the same dynamic int8 activations
+            # (Int8DynamicActivationIntxWeightConfig, as upstream's own 8da8w mode builds them).
+            head, model.output = model.output, torch.nn.Identity()
+        quantised = upstream(model, qmode, *rest, **kwargs)
+        if head is not None:
+            from torchao.quantization import Int8DynamicActivationIntxWeightConfig, quantize_
+            from torchao.quantization.granularity import PerAxis
+
+            with torch.no_grad():
+                quantize_(
+                    head,
+                    Int8DynamicActivationIntxWeightConfig(weight_dtype=torch.int8, weight_granularity=PerAxis(0)),
+                )
+            quantised.output = head
+            print("output head quantized to int8 per channel")
+        if not codes:
+            return quantised
+        injected, _ = inject(quantised, codes)
+        # Every code must find its tensor. If the solve was run against a different
+        # checkpoint, or a name moved, the export would otherwise finish, be labelled GPTQ,
+        # and carry weights that were quietly rounded instead.
+        if injected != len(codes):
+            missing = sorted(set(codes) - {n for n, _ in quantised.named_modules()})
+            raise ValueError(
+                f"{len(codes)} solved tensors but {injected} were injected; these codes match no module: {missing[:5]}"
+            )
+        return quantised
+
+    return quantize
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="the export_llm YAML the exporter wrote")
@@ -71,6 +117,11 @@ def main(argv: list[str] | None = None) -> int:
         "--lfm2-state-fix",
         action="store_true",
         help="clear the short convolution's state at position zero (pipeline/lfm2_state.py)",
+    )
+    parser.add_argument(
+        "--output-int8",
+        action="store_true",
+        help="quantize the output head to int8 per channel instead of int4 (XnnpackPlan.output_bits)",
     )
     parser.add_argument(
         "--lfm3",
@@ -93,31 +144,13 @@ def main(argv: list[str] | None = None) -> int:
         lfm3_model.apply()
         print("applied the LFM3 model definition (pipeline/lfm3_model.py)")
 
-    if args.codes:
+    if args.codes or args.output_int8:
         from executorch.examples.models.llama.source_transformation import quantize as quantize_module
 
         # weights_only: the codes file is an artifact passed between CI jobs, and it holds
         # nothing but tensors, so there is no reason to let it unpickle arbitrary objects.
-        codes = torch.load(args.codes, map_location="cpu", weights_only=True)
-        upstream = quantize_module.quantize
-
-        def quantize(model, qmode, *rest, **kwargs):
-            quantised = upstream(model, qmode, *rest, **kwargs)
-            if qmode != "8da4w":
-                return quantised
-            injected, _ = inject(quantised, codes)
-            # Every code must find its tensor. If the solve was run against a different
-            # checkpoint, or a name moved, the export would otherwise finish, be labelled
-            # GPTQ, and carry weights that were quietly rounded instead.
-            if injected != len(codes):
-                missing = sorted(set(codes) - {n for n, _ in quantised.named_modules()})
-                raise ValueError(
-                    f"{len(codes)} solved tensors but {injected} were injected; "
-                    f"these codes match no module: {missing[:5]}"
-                )
-            return quantised
-
-        quantize_module.quantize = quantize
+        codes = torch.load(args.codes, map_location="cpu", weights_only=True) if args.codes else {}
+        quantize_module.quantize = quantizer(quantize_module.quantize, codes, args.output_int8)
 
     from executorch.extension.llm.export.export_llm import main as export_llm_main
 

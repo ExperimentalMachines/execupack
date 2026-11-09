@@ -139,7 +139,13 @@ def pick_runner(
 
 
 def recipe_fields(
-    recipe, qmode_label: str, solved: bool, backend: str, prefill_chunk: int, executorch: str | None = None
+    recipe,
+    qmode_label: str,
+    solved: bool,
+    backend: str,
+    prefill_chunk: int,
+    executorch: str | None = None,
+    output_bits: int = 4,
 ) -> dict:
     """The report's description of how the weights are stored, true to the recipe built.
 
@@ -169,18 +175,22 @@ def recipe_fields(
                 f"{prefill_chunk}, fp32 KV cache."
             ),
         }
+    head = output_bits == 8
     return {
         **common,
         "group_size": recipe.group_size,
         "int4_codes": "gptq" if solved else "round-to-nearest",
+        **({"output_head": "int8 per channel"} if head else {}),
         "label": (
             f"{qmode_label}-g{recipe.group_size}, int8 embeddings"
             + (", int4 codes solved with GPTQ" if solved else ", int4 codes rounded to nearest")
+            + (", int8 output head" if head else "")
         ),
         "description": (
             f"ExecuTorch {version} `export_llm`: 8-bit dynamic activations "
-            f"and 4-bit weights in groups of {recipe.group_size}, int8 per-channel embeddings, "
-            f"{delegate}, prefill chunk {prefill_chunk}, fp32 KV cache."
+            f"and 4-bit weights in groups of {recipe.group_size}"
+            + (" (the output head 8-bit per channel)" if head else "")
+            + f", int8 per-channel embeddings, {delegate}, prefill chunk {prefill_chunk}, fp32 KV cache."
         ),
     }
 
@@ -290,7 +300,8 @@ def run(
     # LFM3's model is this repository's (pipeline/lfm3_model.py), so its export always goes
     # through the wrapper too; its convolution clears its own state at position zero.
     state_fix = plan.converter == "lfm2"
-    if codes is not None or state_fix or plan.lfm3:
+    output_int8 = plan.output_bits == 8 and recipe.qmode == "8da4w"
+    if codes is not None or state_fix or plan.lfm3 or output_int8:
         command = [sys.executable, "-m", "pipeline.export_with_codes", "--config", str(config_path)]
         if codes is not None:
             command += ["--codes", str(codes)]
@@ -298,6 +309,8 @@ def run(
             command += ["--lfm2-state-fix"]
         if plan.lfm3:
             command += ["--lfm3"]
+        if output_int8:
+            command += ["--output-int8"]
         print(
             f"==> export_llm (codes: {'gptq' if codes else 'round to nearest'}, state fix: {state_fix}, "
             f"lfm3: {plan.lfm3})"
@@ -364,7 +377,14 @@ def run(
             "params": plan.params,
             "export_llm_qmode": QMODES[recipe.qmode],
             "embedding_hqq": recipe.embedding_hqq,
-            **recipe_fields(recipe, qmode_label, codes is not None, backend, min(cfg.prefill_chunk, window)),
+            **recipe_fields(
+                recipe,
+                qmode_label,
+                codes is not None,
+                backend,
+                min(cfg.prefill_chunk, window),
+                output_bits=plan.output_bits if recipe.qmode == "8da4w" else 4,
+            ),
         },
         "window": {
             "context": window,
