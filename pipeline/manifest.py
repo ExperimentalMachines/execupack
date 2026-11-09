@@ -25,7 +25,7 @@ CONFIG_METHODS = (
 )
 
 # Attribution the upstream licenses require of redistributed derivatives, keyed by the
-# app family token of the source name.
+# pipeline family token of the source name (naming.pipeline_family).
 NOTICES = {
     # Llama 3.2 Community License, section 1.b.iii.
     "llama32": (
@@ -34,6 +34,7 @@ NOTICES = {
     ),
     # Gemma Terms of Use, section 3.1.
     "gemma3": ("Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms\n"),
+    "gemma2": ("Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms\n"),
 }
 BUILT_WITH = {"llama32": "Built with Llama"}
 
@@ -143,7 +144,7 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         key=lambda r: (list(BACKEND_TITLES).index(r["backend"]), r.get("target") or "", r["window"]["context"]),
     )
     source = reports[0]["source"]
-    token = naming.app_family(naming.source_name(source["id"]))
+    token = naming.pipeline_family(naming.source_name(source["id"]))
     tags = sorted(set(hub_tags) | {r["backend"] for r in reports})
     upstream = f"https://huggingface.co/{source['id']}"
     revisions = sorted({r["source"]["sha"] for r in reports})

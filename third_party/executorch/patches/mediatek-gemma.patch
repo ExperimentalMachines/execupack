@@ -1,0 +1,232 @@
+diff --git a/examples/mediatek/model_export_scripts/gemma.py b/examples/mediatek/model_export_scripts/gemma.py
+index ee3a4df..95548dd 100644
+--- a/examples/mediatek/model_export_scripts/gemma.py
++++ b/examples/mediatek/model_export_scripts/gemma.py
+@@ -59,6 +59,49 @@ from tqdm import tqdm
+ warnings.filterwarnings("ignore")
+ 
+ 
++def _retry_compile_service_start():
++    """execupack: MediaTek's compiler client starts a local service on a random port per
++    compile and polls it over HTTP; starting it fails now and then, after hours of work (the
++    same retry llama.py and qwen.py carry, mediatek-calibration-as-arrays.patch). The compile
++    is a pure function of its input, so it is asked again; any error that is not about the
++    service, or a third failure, still stops the export."""
++    import time as _time
++
++    try:
++        import mtk_neuron
++    except ImportError:
++        return
++    compile_once = getattr(mtk_neuron, "compile", None)
++    if compile_once is None or getattr(compile_once, "retries_service_start", False):
++        return
++
++    def compile_with_retry(*args, **kwargs):
++        for attempt in range(3):
++            try:
++                return compile_once(*args, **kwargs)
++            except RuntimeError as error:
++                if "service" not in str(error) or attempt == 2:
++                    raise
++                print(f"mtk_neuron: {error}; asking again ({attempt + 2} of 3)", flush=True)
++                _time.sleep(10)
++
++    compile_with_retry.retries_service_start = True
++    mtk_neuron.compile = compile_with_retry
++
++
++_retry_compile_service_start()
++
++
++def local_rot_emb(config):
++    """execupack: Gemma 3's sliding layers' RoPE table, at rope_local_base_freq. get_master_rot_emb
++    builds at config.rope_theta (mediatek-rope-theta.patch), Gemma 3's global base."""
++    import copy
++
++    local = copy.copy(config)
++    local.rope_theta = config.rope_local_base_freq
++    return get_master_rot_emb(local, dtype=torch.float32)
++
++
+ def get_argument_parser():
+     parser = argparse.ArgumentParser(
+         description="Run Export to ET for suppoorted LLM models.", allow_abbrev=False
+@@ -207,28 +250,22 @@ def forward_and_save(
+     model_input_dict,
+     num_blocks_per_chunk,
+     batch_name,
++    pos_emb_local=None,
+ ):
+     for chunk_idx in range(len(models)):
+         cache_in = cache[chunk_idx]
++        saved = {"hidden_state": hidden_state, "mask": mask, "pos_emb": pos_emb, "cache": cache_in}
++        if pos_emb_local is not None:
++            saved["pos_emb_local"] = pos_emb_local  # execupack: Gemma 3's sliding table
+ 
+         try:
+             model_input_dict[str(chunk_idx)] = {
+                 **model_input_dict[str(chunk_idx)],
+-                batch_name: {
+-                    "hidden_state": hidden_state,
+-                    "mask": mask,
+-                    "pos_emb": pos_emb,
+-                    "cache": cache_in,
+-                },
++                batch_name: saved,
+             }
+         except:
+             model_input_dict[str(chunk_idx)] = {
+-                batch_name: {
+-                    "hidden_state": hidden_state,
+-                    "mask": mask,
+-                    "pos_emb": pos_emb,
+-                    "cache": cache_in,
+-                }
++                batch_name: saved,
+             }
+ 
+         if isinstance(mask, dict):
+@@ -240,6 +277,7 @@ def forward_and_save(
+                     global_mask,
+                     local_mask,
+                     pos_emb,
++                    pos_emb_local,
+                     *torch.split(cache_in, 1, dim=0),
+                 )
+         else:
+@@ -267,6 +305,7 @@ def prepare_model_inputs(
+     eos_token_id_tensor,
+     response_cap,
+     window_size,
++    master_rot_emb_local=None,
+ ):
+     model_input_dict = {str(i): None for i in range(len(models))}
+     input_ids = inp.pop("input_ids")
+@@ -287,6 +326,7 @@ def prepare_model_inputs(
+     else:
+         mask = global_mask
+     pos_emb = master_rot_emb[:, :, :input_length, :]
++    pos_emb_local = None if master_rot_emb_local is None else master_rot_emb_local[:, :, :input_length, :]
+     # cache shape: num chunks of 2*num_block, num kv heads, c, head dim
+     cache = reset_cache(
+         len(models), num_key_value_heads, num_blocks_per_chunk, head_dim, max_cache_size
+@@ -300,6 +340,7 @@ def prepare_model_inputs(
+         model_input_dict,
+         num_blocks_per_chunk,
+         "prompt",
++        pos_emb_local=pos_emb_local,
+     )
+     next_token_logits = logits[:, -1, :]  # last layer logits
+     next_token = torch.argmax(next_token_logits, dim=-1)
+@@ -325,6 +366,11 @@ def prepare_model_inputs(
+         else:
+             mask = global_mask
+         pos_emb = master_rot_emb[:, :, seq_length : seq_length + input_length, :]
++        pos_emb_local = (
++            None
++            if master_rot_emb_local is None
++            else master_rot_emb_local[:, :, seq_length : seq_length + input_length, :]
++        )
+         logits, cache = forward_and_save(
+             models,
+             hidden_state,
+@@ -334,6 +380,7 @@ def prepare_model_inputs(
+             model_input_dict,
+             num_blocks_per_chunk,
+             f"response{response_count}",
++            pos_emb_local=pos_emb_local,
+         )
+         next_token_logits = logits[:, -1, :]
+         next_token = torch.argmax(next_token_logits, dim=-1)
+@@ -362,11 +409,13 @@ def calibrate_model(model, cal_dataset, chunk_idx: str):
+                     if isinstance(mask, dict):
+                         global_mask = torch.tensor(mask["GLOBAL"])
+                         local_mask = torch.tensor(mask["SLIDING_LOCAL"])
++                        pos_emb_local = torch.tensor(inp[chunk_idx][batch]["pos_emb_local"])
+                         model(
+                             inputs_embeds,
+                             global_mask,
+                             local_mask,
+                             pos_emb,
++                            pos_emb_local,
+                             *torch.split(cache, 1, dim=0),
+                         )
+                     else:
+@@ -545,6 +594,7 @@ def main():
+             tokenize_dataset, fn_kwargs={"tokenizer": tokenizer}
+         )
+         window_size = getattr(config, "sliding_window_attention_size", None)
++        master_rot_emb_local = local_rot_emb(config) if config.model_type == "gemma3" else None
+         print("Preparing Model Calibration Inputs...")
+         cal_dataset = cal_dataset.map(
+             prepare_model_inputs,
+@@ -559,8 +609,15 @@ def main():
+                 "eos_token_id_tensor": torch.tensor(tokenizer.eos_token_id),
+                 "response_cap": args.response_cap,
+                 "window_size": window_size,
++                "master_rot_emb_local": master_rot_emb_local,
+             },
++            # execupack: each row is one prompt's every step, each a full fp32 KV cache at the
++            # window; the default writer_batch_size of 1000 kept all of them resident before
++            # any reached Arrow. One row at a time is what export_mtk.calibration_bytes sizes.
++            writer_batch_size=1,
+         )
++        # execupack: read the prepared tensors back as arrays rather than nested Python lists.
++        cal_dataset = cal_dataset.with_format("numpy")
+ 
+     for chunk_idx, chunk in enumerate(models):
+         export_to_et_ir(
+diff --git a/examples/mediatek/models/llm_models/modeling_gemma.py b/examples/mediatek/models/llm_models/modeling_gemma.py
+index e1ee4d7..7b55617 100644
+--- a/examples/mediatek/models/llm_models/modeling_gemma.py
++++ b/examples/mediatek/models/llm_models/modeling_gemma.py
+@@ -1022,7 +1022,11 @@ class Gemma3ModelChunk(ModelChunk):
+         self.sliding_window_pattern = self.config.sliding_window_pattern
+         self.global_local_attention_pattern = self.config.global_local_attention_pattern
+ 
+-    def forward(self, inputs_embeds, global_mask, local_mask, pos_emb, *cache):
++    def forward(self, inputs_embeds, global_mask, local_mask, pos_emb, pos_emb_local, *cache):
++        # execupack: Gemma 3 rotates its sliding layers at rope_local_base_freq (10000) and its
++        # global layers at rope_theta (1e6). One table for every layer was measured against
++        # Hugging Face in fp32: perplexity 22.7 against 9.6 at 1e6, top-1 52%; per-layer tables
++        # match exactly. pos_emb is the global table, pos_emb_local the sliding one.
+         if not self.jit_trace:
+             assert (
+                 len(cache) == 2 * self.num_blocks
+@@ -1058,15 +1062,17 @@ class Gemma3ModelChunk(ModelChunk):
+             mask_type = self.global_local_attention_pattern[mask_pos]
+             if mask_type == "SLIDING_LOCAL":
+                 mask = local_mask
++                layer_pos_emb = pos_emb_local
+             elif mask_type == "GLOBAL":
+                 mask = global_mask
++                layer_pos_emb = pos_emb
+             else:
+                 raise TypeError(f"Unrecognized mask type: {mask_type}")
+ 
+             decoder_outputs = decoder_layer(
+                 hidden_states.to(self.device_list[idx]),
+                 mask=mask.to(self.device_list[idx]),
+-                pos_emb=pos_emb.to(self.device_list[idx]),
++                pos_emb=layer_pos_emb.to(self.device_list[idx]),
+                 past_key=cache[idx].to(self.device_list[idx]),
+                 past_value=cache[self.num_blocks + idx].to(self.device_list[idx]),
+             )
+@@ -1540,6 +1546,8 @@ class Gemma3ModelChunk(ModelChunk):
+                 dtype=torch.float32,
+             ),
+             torch.randn(1, 2, num_token, head_dim, device="cpu", dtype=torch.float32),
++            # execupack: the sliding layers' table (forward's pos_emb_local).
++            torch.randn(1, 2, num_token, head_dim, device="cpu", dtype=torch.float32),
+             *[
+                 torch.randn(
+                     1,
+@@ -1563,6 +1571,7 @@ class Gemma3ModelChunk(ModelChunk):
+                 {0: Dim.STATIC, 1: Dim.STATIC, 2: nt, 3: nt + cache_size},
+                 {0: Dim.STATIC, 1: Dim.STATIC, 2: nt, 3: nt + cache_size},
+                 {0: Dim.STATIC, 1: Dim.STATIC, 2: nt, 3: Dim.STATIC},
++                {0: Dim.STATIC, 1: Dim.STATIC, 2: nt, 3: Dim.STATIC},
+                 cache_dims,
+             )
+             return example_inputs, dynamic_shapes

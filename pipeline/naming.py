@@ -37,8 +37,8 @@ APP_EXCLUDED = ("vl", "vision", "coder", "guard")
 # the Kotlin port: the app reads these names as no family at all and refuses the file
 # (PromptTemplates.forModel returns null, loudly), so a published file waits for the
 # template without breaking anything. Each needs its own exporter support first; LFM3 has
-# pipeline/lfm3_model.py.
-AHEAD_OF_APP = ("lfm3",)
+# pipeline/lfm3_model.py, Gemma 2 MediaTek's gemma.py (neither app has a Gemma 2 template).
+AHEAD_OF_APP = ("lfm3", "gemma2")
 _KEPT_PUNCTUATION = "-_."
 _SIZE_HINT = re.compile(r"(?<![A-Za-z0-9.])\d+(\.\d+)?[BM](?![A-Za-z0-9])", re.IGNORECASE)
 

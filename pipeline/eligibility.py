@@ -23,6 +23,8 @@ FAMILY_APP_TOKENS = {
     # Ahead of the app (naming.AHEAD_OF_APP): it has no LFM3 template yet.
     "lfm3": {"lfm3"},
     "phi4_mini": {"phi4mini"},
+    # Ahead of both apps (naming.AHEAD_OF_APP).
+    "gemma2": {"gemma2"},
 }
 # What a release of each family is called. The architecture class alone is not enough: a
 # later generation can keep the class (a text-only "Qwen3.8" on Qwen3ForCausalLM would pass
@@ -35,6 +37,7 @@ FAMILY_NAME_PATTERNS = {
     "llama": re.compile(r"llama-?3\.2(?![.\d])|smollm2(?!\d)", re.IGNORECASE),
     "gemma3": re.compile(r"gemma-?3(?![.\dn])", re.IGNORECASE),
     "smollm3": re.compile(r"smollm3(?!\d)", re.IGNORECASE),
+    "gemma2": re.compile(r"gemma-?2(?![.\dn])", re.IGNORECASE),
     # Phi-4-mini only: Phi-3 and Phi-3.5 share the architecture class, and the app's template
     # is Phi-4-mini's (Phi4Prompt).
     "phi4_mini": re.compile(r"phi-?4-mini(?![-.]?\d)", re.IGNORECASE),

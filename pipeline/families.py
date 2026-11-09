@@ -58,8 +58,8 @@ _MTK_QWEN2_MASK = (
     "through: the fp32 MediaTek graph is at KL 0.013 and 98% top-1 against Hugging Face before "
     "any quantization (docs/research, finding 37)"
 )
-_MTK_GEMMA3 = "not validated on the MediaTek scripts (they expect model_type gemma3, HF has gemma3_text)"
 _MTK_NO_MODEL = "no model definition for this architecture in ExecuTorch 1.5.1's examples/mediatek"
+_GEMMA2_NO_QNN = "ExecuTorch 1.5.1's Qualcomm registry has gemma2-2b, but execupack has not wired or validated it"
 _LFM2_NO_VULKAN = (
     "the Vulkan delegate has no kernel for the short convolution, and an LFM2.5 file that "
     "lowers to it segfaults in the 1.4.0 runtime at the first prefill"
@@ -98,10 +98,19 @@ FAMILIES: tuple[Family, ...] = (
     ),
     Family("qwen2_5", ("Qwen2ForCausalLM",), {"mtk": _MTK_QWEN2_MASK}),
     Family("llama", ("LlamaForCausalLM",)),
+    # Gemma 3 on MediaTek: examples/mediatek/model_export_scripts/gemma.py with the config
+    # mtk_model_config writes (HF's gemma3_text keys in MediaTek's spelling).
     Family(
         "gemma3",
         ("Gemma3ForCausalLM",),
-        {"xnnpack": _NOT_IN_EXPORT_LLM, "vulkan": _NOT_IN_EXPORT_LLM, "mtk": _MTK_GEMMA3},
+        {"xnnpack": _NOT_IN_EXPORT_LLM, "vulkan": _NOT_IN_EXPORT_LLM},
+    ),
+    # Gemma 2: MediaTek only (gemma.py's Gemma2ModelChunk), and ahead of both apps, neither of
+    # which has a Gemma 2 chat template yet (naming.AHEAD_OF_APP).
+    Family(
+        "gemma2",
+        ("Gemma2ForCausalLM",),
+        {"xnnpack": _NOT_IN_EXPORT_LLM, "vulkan": _NOT_IN_EXPORT_LLM, "qnn": _GEMMA2_NO_QNN},
     ),
     # Phi-4-mini: Llama's block with fused q/k/v and gate/up projections (pipeline/convert.py
     # splits them), partial RoPE on 96 of 128 head dims, and LongRoPE. ExecuTorch 1.5.1 builds
@@ -168,7 +177,50 @@ _MTK_SCRIPTS = {
     "qwen2_5": ("qwen.py", "qwen.json", "qwen2"),
     "lfm2": ("lfm2.py", "qwen3.json", "lfm2"),
     "llama": ("llama.py", "llama3.json", "llama"),
+    # shell_scripts/export_gemma.sh: gemma.py and gemma.json for both generations.
+    "gemma3": ("gemma.py", "gemma.json", "gemma3"),
+    "gemma2": ("gemma.py", "gemma.json", "gemma2"),
 }
+
+
+# Gemma 3's sliding layers as MediaTek's Gemma3ModelChunk names them (modeling_gemma.py), keyed
+# by Hugging Face's layer_types spelling.
+_GEMMA3_MTK_LAYER = {"sliding_attention": "SLIDING_LOCAL", "full_attention": "GLOBAL"}
+
+
+def mtk_model_config(config: dict) -> dict:
+    """The config.json MediaTek's scripts read, from a Hugging Face one.
+
+    Gemma 3 (HF model_type gemma3_text) takes MediaTek's own keys for what HF spells another way
+    (examples/mediatek/models/llm_models/configuration_gemma.py and weights/gemma3_1b_it):
+    the sliding window as ``sliding_window_attention_size`` (MediaTek's default is 1024, the
+    checkpoint's 512), the layer pattern as ``global_local_attention_pattern`` over one period,
+    and ``use_res_clamp`` false, since HF's model clamps no residual and MediaTek's default does.
+    Every other family's config is read as it is.
+    """
+    c = text_config(config)
+    if c.get("model_type") not in ("gemma3", "gemma3_text"):
+        return config
+    out = dict(c)
+    out["model_type"] = "gemma3"
+    period = int(c.get("sliding_window_pattern") or 0)
+    layer_types = c.get("layer_types")
+    if layer_types:
+        period = period or next(i + 1 for i, t in enumerate(layer_types) if t == "full_attention")
+        pattern = [_GEMMA3_MTK_LAYER[t] for t in layer_types[:period]]
+        if any(_GEMMA3_MTK_LAYER[t] != pattern[i % period] for i, t in enumerate(layer_types)):
+            raise UnsupportedModel("Gemma 3 layer_types do not repeat with one period")
+    else:
+        _require(period > 0, "Gemma 3 config names neither layer_types nor sliding_window_pattern")
+        # transformers' Gemma3TextConfig: every period-th layer is global, the rest slide.
+        pattern = ["SLIDING_LOCAL"] * (period - 1) + ["GLOBAL"]
+    out.update(
+        sliding_window_attention_size=int(c["sliding_window"]),
+        sliding_window_pattern=period,
+        global_local_attention_pattern=pattern,
+        use_res_clamp=False,
+    )
+    return out
 
 
 def mtk_chunks(n_layers: int, max_chunks: int) -> int:
@@ -203,7 +255,7 @@ def mtk_plan(family: Family, config: dict, max_chunks: int) -> MtkPlan:
     if family.key not in _MTK_SCRIPTS:
         raise UnsupportedModel(f"no MediaTek export script mapped for {family.key}")
     script, preformatter, model_type = _MTK_SCRIPTS[family.key]
-    c = text_config(config)
+    c = text_config(mtk_model_config(config))
     if c.get("model_type") != model_type:
         raise UnsupportedModel(f"model_type {c.get('model_type')!r}, the MediaTek {script} path expects {model_type!r}")
     scaling = rope_scaling(c)

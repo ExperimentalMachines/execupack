@@ -485,3 +485,32 @@ def test_the_patches_carry_what_the_export_checks_for():
     assert sum(export_mtk.ROPE_MARKER in line for line in rope.splitlines() if line.startswith("+")) == 2
     for config in export_mtk.ROPE_CONFIGS.values():
         assert f"+++ b/examples/mediatek/models/llm_models/{config}" in rope
+
+
+def test_gemma3_config_is_written_in_mediateks_spelling():
+    mtk = families.mtk_model_config(hf_config("google/gemma-3-1b-it"))
+    assert mtk["model_type"] == "gemma3"  # HF says gemma3_text; configuration_gemma reads gemma3
+    assert mtk["sliding_window_attention_size"] == 512  # MediaTek's default is 1024
+    assert mtk["global_local_attention_pattern"] == ["SLIDING_LOCAL"] * 5 + ["GLOBAL"]
+    assert mtk["use_res_clamp"] is False  # HF clamps no residual; MediaTek's default does
+    assert families.mtk_model_config(hf_config("Qwen/Qwen3-0.6B")) == hf_config("Qwen/Qwen3-0.6B")
+
+
+def test_a_gemma3_layer_pattern_that_does_not_repeat_is_refused():
+    config = {**hf_config("google/gemma-3-1b-it"), "sliding_window_pattern": None}
+    config["layer_types"] = ["sliding_attention"] * 5 + ["full_attention"] + ["full_attention"] * 20
+    with pytest.raises(families.UnsupportedModel, match="one period"):
+        families.mtk_model_config(config)
+
+
+def test_gemma_runs_gemma_py_and_gemma3s_runner_feeds_both_rope_tables():
+    for model, model_type in (("google/gemma-3-1b-it", "gemma3"), ("google/gemma-2-2b-it", "gemma2")):
+        config = hf_config(model)
+        assert families.family_for(config).key == model_type
+        plan = families.mtk_plan(families.family_for(config), config, CFG.mtk.max_chunks)
+        assert (plan.script, plan.preformatter, plan.num_chunks) == ("gemma.py", "gemma.json", 2)  # 26 layers
+    three = export_mtk.runner_settings(hf_config("google/gemma-3-1b-it"), CFG.mtk, 2, [1, 106])
+    assert (three["rot_emb_base"], three["rot_emb_local_base"], three["window_size"]) == (1e6, 10000.0, 512)
+    assert three["rot_emb_inputs"] == ["global", "local"]
+    two = export_mtk.runner_settings(hf_config("google/gemma-2-2b-it"), CFG.mtk, 2, [1, 107])
+    assert two["rot_emb_base"] == 10000.0 and "rot_emb_local_base" not in two and "window_size" not in two

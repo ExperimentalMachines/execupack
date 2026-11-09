@@ -346,6 +346,27 @@ def runner_settings(config: dict, recipe: settings.MtkRecipe, bos: int | None, e
         "eos_token": eos_token if eos_token is not None else (eos[0] if eos else None),
         "eos_tokens": eos,
         "tokenizer_type": "hf",
+        **gemma3_runner_settings(config),
+    }
+
+
+def gemma3_runner_settings(config: dict) -> dict:
+    """What a runner needs beyond the flags above to drive a Gemma 3 graph.
+
+    ``window_size``: the sliding layers' window, for the second mask the graph takes after the
+    global one (mtk_llama_executor_runner --window_size, MaskBuilder::enableSlidingWindow).
+    ``rot_emb_local_base``: the base of the second RoPE table, the input that follows the
+    global one in a graph built with mediatek-gemma.patch. ``rot_emb_base`` stays the global
+    layers' (rope_theta). Neither MediaTek's stock runner nor any shipped app feeds that second
+    table yet; one that does not cannot run these files correctly.
+    """
+    mtk = families.mtk_model_config(config)
+    if mtk.get("model_type") != "gemma3":
+        return {}
+    return {
+        "window_size": int(mtk["sliding_window_attention_size"]),
+        "rot_emb_local_base": float(mtk["rope_local_base_freq"]),
+        "rot_emb_inputs": ["global", "local"],
     }
 
 
@@ -520,7 +541,10 @@ def run(
     tokenizer, licenses = copy_side_files(source, weight_dir, out_dir)
     # The MediaTek script reads the weights' own config.json: give it the keys it expects
     # (hub.normalize_config: the first LFM2 checkpoints spell them the older way).
-    model_config = hub.normalize_config(json.loads((weight_dir / "config.json").read_text(encoding="utf-8")))
+    # Gemma 3's keys in MediaTek's spelling (families.mtk_model_config).
+    model_config = families.mtk_model_config(
+        hub.normalize_config(json.loads((weight_dir / "config.json").read_text(encoding="utf-8")))
+    )
     if plan.tokenizer:
         model_config["tokenizer"] = plan.tokenizer
     (weight_dir / "config.json").write_text(json.dumps(model_config, indent=2), encoding="utf-8")
