@@ -485,6 +485,10 @@ def test_the_patches_carry_what_the_export_checks_for():
     assert sum(export_mtk.ROPE_MARKER in line for line in rope.splitlines() if line.startswith("+")) == 2
     for config in export_mtk.ROPE_CONFIGS.values():
         assert f"+++ b/examples/mediatek/models/llm_models/{config}" in rope
+    gemma = (patches / "mediatek-gemma.patch").read_text(encoding="utf-8")
+    for relative, marker in export_mtk.GEMMA3_MARKERS.items():
+        assert f"+++ b/examples/mediatek/{relative}" in gemma
+        assert sum(line[1:].strip() == marker for line in gemma.splitlines() if line.startswith("+")) == 1
 
 
 def test_gemma3_config_is_written_in_mediateks_spelling():
@@ -597,3 +601,15 @@ def test_each_run_builds_in_its_own_copy_of_the_scripts(tmp_path):
     again = export_mtk.private_examples(examples, tmp_path / "work-8192")
     assert again == runs[0] and not (again / "leftover").exists()
     assert (examples / "pte" / "gemma-3-1b-it_A16W8_2_chunks" / "stale_0.pte").exists()  # never touched
+
+
+def test_gemma3_is_refused_on_scripts_without_the_two_table_patch(tmp_path, monkeypatch, source):
+    examples = tmp_path / "mediatek"
+    (examples / "model_export_scripts").mkdir(parents=True)
+    (examples / "models" / "llm_models").mkdir(parents=True)
+    calibrated = f"{export_mtk.PATCH_MARKER}\n{export_mtk.WRITER_MARKER}\n"
+    (examples / "model_export_scripts" / "gemma.py").write_text(calibrated)
+    (examples / "models" / "llm_models" / "modeling_gemma.py").write_text("def forward(self, *args): ...\n")
+    monkeypatch.setattr(export_mtk.hub, "fetch", lambda model_id, revision: source(model_id))
+    with pytest.raises(export_mtk.ExportError, match="modeling_gemma.py lacks the patch.*mediatek-gemma.patch"):
+        export_mtk.run("google/gemma-3-1b-it", "main", "MT6991", tmp_path, tmp_path, "p", examples)

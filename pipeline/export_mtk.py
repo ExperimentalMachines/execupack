@@ -98,6 +98,16 @@ WRITER_MARKER = "writer_batch_size=1,"
 # which get_master_rot_emb otherwise replaces with 10000 (docs/research, finding 37).
 ROPE_MARKER = 'self.rope_theta = float(kwargs.pop("rope_theta", 10000.0) or 10000.0)'
 ROPE_CONFIGS = {"qwen.py": "configuration_qwen.py", "llama.py": "configuration_llama.py"}
+# mediatek-gemma.patch: Gemma 3's chunk takes the sliding layers' RoPE table as an input of its
+# own, and gemma.py builds and feeds it. Unpatched, the graph gives every layer one table
+# (fp32 gate 6/11 or 5/11, docs/research finding 46) while runner_settings names two.
+GEMMA_PATCH = "patches/mediatek-gemma.patch"
+GEMMA3_MARKERS = {
+    "models/llm_models/modeling_gemma.py": (
+        "def forward(self, inputs_embeds, global_mask, local_mask, pos_emb, pos_emb_local, *cache):"
+    ),
+    "model_export_scripts/gemma.py": "def local_rot_emb(config):",
+}
 # third_party/executorch/patches/mediatek-lfm2.patch: lfm2.py calibrates every chunk in one
 # streaming pass over the long-context corpus (pipeline/mtk_corpus.py) and keeps no step, so
 # the Arrow round trip and the arrays patch do not apply to it.
@@ -484,6 +494,10 @@ def run(
     script_text = script.read_text(encoding="utf-8")
     if not streaming and (PATCH_MARKER not in script_text or WRITER_MARKER not in script_text):
         raise ExportError(f"{script} lacks third_party/executorch/patches/mediatek-calibration-as-arrays.patch")
+    if families.text_config(families.mtk_model_config(source.config)).get("model_type") == "gemma3":
+        for relative, marker in GEMMA3_MARKERS.items():
+            if marker not in (examples_dir / relative).read_text(encoding="utf-8"):
+                raise ExportError(f"{examples_dir / relative} lacks the patch third_party/executorch/{GEMMA_PATCH}")
     if plan.script in ROPE_CONFIGS:
         config_file = examples_dir / "models" / "llm_models" / ROPE_CONFIGS[plan.script]
         if ROPE_MARKER not in config_file.read_text(encoding="utf-8"):
