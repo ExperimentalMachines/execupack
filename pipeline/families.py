@@ -223,6 +223,25 @@ def mtk_model_config(config: dict) -> dict:
     return out
 
 
+def mtk_limits(config: dict, window: int) -> list[str]:
+    """What a MediaTek export at ``window`` computes differently from Hugging Face, for the card.
+
+    Gemma 2 alternates sliding layers (``sliding_window``, 4096) with global ones, and MediaTek's
+    Gemma2ModelChunk takes one mask for every layer: up to the sliding window the graph is HF's
+    (exact in fp32, measured 2026-11-09), past it the sliding layers see the whole window.
+    """
+    c = text_config(config)
+    sliding = c.get("sliding_window")
+    if c.get("model_type") == "gemma2" and sliding and window > int(sliding):
+        return [
+            f"Gemma 2's sliding layers attend over {int(sliding):,} tokens in Hugging Face's model and "
+            f"over the whole {window:,}-token window in MediaTek's graph, which takes one mask for every "
+            f"layer: prompts up to {int(sliding):,} tokens are computed as Hugging Face computes them, "
+            "longer ones are not."
+        ]
+    return []
+
+
 def mtk_chunks(n_layers: int, max_chunks: int) -> int:
     """Most chunks up to ``max_chunks`` that split the layers evenly (the scripts require it)."""
     return next(n for n in range(min(max_chunks, n_layers), 0, -1) if n_layers % n == 0)

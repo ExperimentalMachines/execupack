@@ -176,10 +176,17 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         # The app picks the chat template from the name and has none for this family yet, so
         # it refuses these files until it gains one; the card says so instead of implying
         # they run there today.
+        # Only an XNNPACK or Vulkan file runs on any ExecuTorch runtime; NPU files need their own
+        # runner, which the MediaTek section below names (codex review: Gemma 2 is MediaTek-only).
+        portable = any(r["backend"] in ("xnnpack", "vulkan") for r in reports)
         out += [
             "The openweights app has no chat template for this model family yet, so it does not "
-            "load these files until it gains one. Any ExecuTorch runtime with the LLM runner's "
-            "custom ops runs them today"
+            "load these files until it gains one. "
+            + (
+                "Any ExecuTorch runtime with the LLM runner's custom ops runs them today"
+                if portable
+                else "The runner each backend needs is named below"
+            )
             + (
                 "."
                 if source.get("variant") == "base"
@@ -324,6 +331,24 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
             "(`examples/mediatek/executor_runner`) with the device's NeuroPilot runtime; the settings it "
             "needs are in each folder's `config.json`, under each variant's `runner`.",
         ]
+        if any(r["runner"].get("rot_emb_local_base") for r in mtk):
+            # mediatek-gemma.patch: Gemma 3's graph takes the sliding layers' rotary table as an
+            # input of its own, which no runner ExecuTorch or the apps ship feeds yet.
+            local = next(r["runner"] for r in mtk if r["runner"].get("rot_emb_local_base"))
+            out += [
+                "",
+                "Variants whose `runner` lists `rot_emb_inputs: [global, local]` take two rotary-embedding "
+                "inputs, in that order after the masks: the global layers' table at `rot_emb_base` "
+                f"({local['rot_emb_base']:g}) and the sliding layers' at `rot_emb_local_base` "
+                f"({local['rot_emb_local_base']:g}), with a sliding-window mask of `window_size` "
+                f"({local['window_size']}) beside the global one. MediaTek's runner as ExecuTorch 1.5.1 ships "
+                "it builds one table and cannot run them correctly, and neither app feeds the second table "
+                "yet; a runner has to build both. With one table for every layer this model was measured "
+                "far from Hugging Face's (perplexity 22.7 against 9.6, fp32); with both it matches exactly.",
+            ]
+        limits = sorted({line for r in mtk for line in r.get("limits", [])})
+        if limits:
+            out += ["", *limits]
         if any(r["runner"].get("state_layout") == "per-layer" for r in mtk):
             # MediaTek's stock runner counts 2 * num_layer / num_chunk caches per chunk and
             # refuses these files at load, so the card has to say which runner reads them.

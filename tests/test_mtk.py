@@ -514,3 +514,47 @@ def test_gemma_runs_gemma_py_and_gemma3s_runner_feeds_both_rope_tables():
     assert three["rot_emb_inputs"] == ["global", "local"]
     two = export_mtk.runner_settings(hf_config("google/gemma-2-2b-it"), CFG.mtk, 2, [1, 107])
     assert two["rot_emb_base"] == 10000.0 and "rot_emb_local_base" not in two and "window_size" not in two
+
+
+def gemma_report(model, window, **runner):
+    report = mtk_report()
+    name = model.rsplit("/", 1)[-1]
+    report["source"] = {"id": model, "sha": "0" * 12, "license": {"license": "gemma"}}
+    report["output_repo"] = f"experimentalmachines/{name}-ExecuTorch"
+    report["window"] = {"context": window, "kv_cache_bytes_per_token": None}
+    report["runner"] = {**report["runner"], **runner}
+    limits = families.mtk_limits(hf_config(model), window)
+    if limits:
+        report["limits"] = limits
+    return report
+
+
+def test_a_mediatek_only_family_ahead_of_the_app_is_not_promised_to_any_runtime():
+    text = manifest.readme(
+        "experimentalmachines/gemma-2-2b-it-ExecuTorch", [gemma_report("google/gemma-2-2b-it", 2048)], [], []
+    )
+    assert "no chat template for this model family yet" in text
+    assert "Any ExecuTorch runtime" not in text  # the MediaTek files need MediaTek's runner
+
+
+def test_gemma2_past_its_sliding_window_says_what_it_computes_differently():
+    assert families.mtk_limits(hf_config("google/gemma-2-2b-it"), 4096) == []
+    reports = [gemma_report("google/gemma-2-2b-it", 4096), gemma_report("google/gemma-2-2b-it", 8192)]
+    text = manifest.readme("experimentalmachines/gemma-2-2b-it-ExecuTorch", reports, [], [])
+    assert text.count("over the whole 8,192-token window in MediaTek's graph") == 1
+    assert "prompts up to 4,096 tokens are computed as Hugging Face computes them" in text
+
+
+def test_the_gemma3_card_says_its_runner_must_feed_both_rope_tables():
+    runner = export_mtk.runner_settings(hf_config("google/gemma-3-1b-it"), CFG.mtk, 2, [1, 106])
+    report = gemma_report(
+        "google/gemma-3-1b-it",
+        2048,
+        **{k: runner[k] for k in ("rot_emb_base", "rot_emb_local_base", "window_size", "rot_emb_inputs")},
+    )
+    text = manifest.readme("experimentalmachines/gemma-3-1b-it-ExecuTorch", [report], [], [])
+    assert "`rot_emb_inputs: [global, local]`" in text
+    assert "rot_emb_local_base` (10000)" in text and "`window_size` (512)" in text
+    assert "cannot run them correctly" in text
+    plain = manifest.readme("experimentalmachines/Qwen3-0.6B-ExecuTorch", [mtk_report()], [], [])
+    assert "rot_emb_inputs" not in plain

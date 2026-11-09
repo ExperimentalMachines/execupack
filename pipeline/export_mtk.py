@@ -677,6 +677,9 @@ def run(
         },
         "metadata": {},
         "smoke": check,
+        # What this window computes differently from Hugging Face (families.mtk_limits); the card
+        # states each.
+        **({"limits": limits} if (limits := families.mtk_limits(source.config, window)) else {}),
         "measuring_gate": gate.measuring_gate(check.get("stats")),
         "run": manifest.run_info(),
     }
