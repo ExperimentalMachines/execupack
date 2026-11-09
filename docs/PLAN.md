@@ -314,7 +314,9 @@ calling ExecuTorch's own script in compile-only mode:
   (`pos_emb_local`) and the per-layer choice, which is exact against Hugging Face (KL 0,
   11/11); the runner config names `rot_emb_local_base` and `rot_emb_inputs`, and the card
   says MediaTek's 1.5.1 runner, which feeds one table, cannot run these files correctly.
-  gemma-3-1b-it is published for MT6991 (A16W8, 2 chunks) at 512 and 2k. Gemma 2 2B is exact
+  gemma-3-1b-it is published for MT6991 (A16W8, 2 chunks) at 512 to 32k; the 32k export took
+  6,944 s on an r7i.4xlarge (123 GiB), the box at 92.8 GB in use with the 16k export beside it.
+  Gemma 2 2B is exact
   as MediaTek ships it up to its 4,096-token sliding window (the card says what differs past
   it), but its 2.36 GB fp32 output head is over `mtk_converter`'s 2 GB protobuf at any chunk
   count, plain, fp16 or with int8 weights folded, so `mtk_plan` refuses it and Gemma 2 has
