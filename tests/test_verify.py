@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import sys
 
 import pytest
 
@@ -80,9 +81,10 @@ def test_an_accepted_gate_keeps_its_measured_verdict_and_records_the_reason(tmp_
             "export_mean": 0.51,
         },
     )
-    import transformers
-
-    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **k: None)
+    # verify imports AutoTokenizer only to hand it to gate.measure, stubbed above; CI has no transformers.
+    tokenizer = type("AutoTokenizer", (), {"from_pretrained": staticmethod(lambda *a, **k: None)})
+    monkeypatch.setitem(sys.modules, "transformers", type(sys)("transformers"))
+    monkeypatch.setattr(sys.modules["transformers"], "AutoTokenizer", tokenizer, raising=False)
     with pytest.raises(verify.ExportError, match="decision gate failed"):
         verify.run(out, "xnnpack", tmp_path / "w1", gate_reference=reference)
     summary = verify.run(out, "xnnpack", tmp_path / "w2", gate_reference=reference, accept_gate="near a tie")
