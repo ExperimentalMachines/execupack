@@ -287,7 +287,18 @@ def publish_hf(
         if orphaned:
             dropped = {id(by_path[p]) for p in orphaned if p in by_path}
             reports = [r for r in reports if id(r) not in dropped]
-        clashes = shared_file_clashes(report, [r for r in reports if r is not report])
+        others = [r for r in reports if r is not report]
+        # Only this folder's windows can be withdrawn (its config.json is the one rebuilt here); a
+        # clash with another backend's report cannot be settled by this run and is refused outright
+        # (codex review of #30, round four).
+        foreign = shared_file_clashes(report, [r for r in others if _folder(r["backend"], r.get("target")) != folder])
+        if foreign:
+            raise ValueError(
+                "this run's files differ from what another backend's reports record: "
+                + "; ".join(why for _, why in foreign)
+                + ". Withdrawing windows in this folder cannot settle that."
+            )
+        clashes = shared_file_clashes(report, [r for r in others if _folder(r["backend"], r.get("target")) == folder])
         withdrawn: list[str] = []
         if clashes and not replace_shared:
             raise ValueError(

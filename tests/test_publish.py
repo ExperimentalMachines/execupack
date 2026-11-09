@@ -646,7 +646,11 @@ def test_replace_shared_takes_only_the_withdrawn_windows_own_files(tmp_path, mon
     clashing = mtk_window(8192, old_emb)
     clashing["files"] += [aux, {"path": "xnnpack/Qwen3-1.7B-8da4w-8k.pte", "bytes": 3, "sha256": "b" * 64}]
     kept = mtk_window(4096, new_emb)  # already republished from the new revision
-    kept["files"].append(aux)
+    # The kept window also lists one of the withdrawn 2k window's labelled files: it must stay.
+    kept["files"] += [
+        aux,
+        {"path": "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-2k-chunk1of1.pte", "bytes": 3, "sha256": "c" * 64},
+    ]
     pre_matrix = mtk_window(2048, old_emb)
     remote = {
         "README.md": None,
@@ -680,7 +684,6 @@ def test_replace_shared_takes_only_the_withdrawn_windows_own_files(tmp_path, mon
     deleted = sorted(op.path_in_repo for op in operations if type(op).__name__ == "CommitOperationDelete")
     added = {op.path_in_repo: op for op in operations if type(op).__name__ == "CommitOperationAdd"}
     assert deleted == [
-        "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-2k-chunk1of1.pte",
         "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-8k-chunk1of1.pte",
         "mtk/mt6991/export-report-8k.json",
         "mtk/mt6991/export-report.json",  # the pre-matrix report, not migrated to a 2k name
@@ -689,5 +692,34 @@ def test_replace_shared_takes_only_the_withdrawn_windows_own_files(tmp_path, mon
     config = json.loads(added["mtk/mt6991/config.json"].path_or_fileobj)
     assert [v["context"] for v in config["variants"]] == [4096, 16384]
     readme = added["README.md"].path_or_fileobj.decode()
-    assert "at 4k to 16k" in readme and "-8k-chunk" not in readme and "-2k-chunk" not in readme
+    # The withdrawn 8k window is gone from the card; the 2k chunk stays listed, by the 4k report.
+    assert "at 4k to 16k" in readme and "-8k-chunk" not in readme
     assert "withdraws 2k, 8k" in message
+
+
+def test_a_clash_with_another_backends_report_is_refused_even_with_replace_shared(tmp_path, monkeypatch):
+    # Withdrawing windows here cannot settle a file another backend's report vouches for, and its
+    # folder's config.json would not be rebuilt (codex review of #30, round four).
+    out, hub = mtk_repo(tmp_path, monkeypatch)
+    import huggingface_hub
+
+    remote = {
+        "README.md": None,
+        "xnnpack/Qwen3-1.7B-8da4w-8k.pte": None,
+        "xnnpack/export-report-8k.json": {
+            **report(8192),
+            "files": [{"path": "mtk/mt6991/Qwen3-1.7B-neuropilot-embedding-fp32.bin", "bytes": 3, "sha256": "d" * 64}],
+        },
+    }
+    hub.files = remote
+
+    def fake_download(repo_id, path, revision, token):
+        local = tmp_path / "dl2" / path
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(json.dumps(remote[path]))
+        return str(local)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    with pytest.raises(ValueError, match="another backend's reports"):
+        publish.publish_hf(out, "mtk", "mt6991", replace_shared=True)
+    assert hub.commits == []
