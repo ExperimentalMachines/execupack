@@ -74,6 +74,16 @@ def require_same_bytes(out_dir: Path, report: dict) -> None:
             raise ValueError(f"{entry['path']} is not the file its report describes (sha256 differs)")
 
 
+def require_vouched(report: dict, paths: list[str]) -> None:
+    """Every model file about to be uploaded is one the report lists: an extra or renamed
+    .pte or .bin, in the backend folder or at the repo root, has no verdict and no digest
+    behind it (codex review, rounds five and six)."""
+    listed = {entry["path"] for entry in report["files"]}
+    unvouched = sorted(path for path in paths if path.endswith((".pte", ".bin")) and path not in listed)
+    if unvouched:
+        raise ValueError(f"{unvouched} would be uploaded but are not in the report; nothing vouches for them")
+
+
 def require_publishable(report: dict) -> None:
     """Refuse a report that has not passed every check its recipe calls for.
 
@@ -138,12 +148,7 @@ def publish_hf(
         # A tokenizer inside any backend folder makes the app stop lending the root one to
         # every other folder (HuggingFaceClient.tokenizerFor), breaking the other backends.
         raise ValueError(f"tokenizer files must stay at the repo root, found {scoped}")
-    # Only what the report vouches for: a model file in the folder that the report does not
-    # list (an extra or renamed .pte) has no verdict and no digest (codex review, round five).
-    listed = {entry["path"] for entry in report["files"]}
-    unvouched = [path for path in new_paths if path.endswith((".pte", ".bin")) and path not in listed]
-    if unvouched:
-        raise ValueError(f"{unvouched} are in {folder} but not in its report; nothing vouches for them")
+    require_vouched(report, [*new_paths, *root_files])
     require_same_bytes(out_dir, report)
 
     hf = hub.api()
@@ -245,6 +250,7 @@ def publish_release(
     label = naming.window_label(report["window"]["context"])
     hf_url = f"https://huggingface.co/{report['output_repo']}"
     candidates = [p for p in sorted(folder.iterdir()) if window_of(p.name) in (None, label)]
+    require_vouched(report, [str(p.relative_to(out_dir)) for p in candidates])
     candidates.append(out_dir / report["tokenizer"])
     assets = [str(p) for p in candidates if p.is_file() and p.stat().st_size < RELEASE_ASSET_LIMIT]
     notes = release_notes(report, hf_url)

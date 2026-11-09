@@ -46,9 +46,10 @@ def test_a_smoke_tested_report_is_gated_again_when_its_gate_is_missing_or_failed
 
 
 def test_a_report_that_passed_both_is_left_alone(tmp_path, reaches_smoke):
-    out = write(tmp_path, {"smoke": {"passed": True}, "gate": {"passed": True}})
     reference = tmp_path / "gate.json"
     reference.write_text("{}")
+    measured_against = hashlib.sha256(b"{}").hexdigest()
+    out = write(tmp_path, {"smoke": {"passed": True}, "gate": {"passed": True, "reference_sha256": measured_against}})
     assert verify.run(out, "xnnpack", tmp_path / "work", gate_reference=reference)["passed"]
     out_ungated = write(tmp_path / "b", {"smoke": {"passed": True}})
     assert verify.run(out_ungated, "xnnpack", tmp_path / "work")["passed"]
@@ -98,3 +99,12 @@ def test_a_verified_report_is_verified_again_when_its_file_was_rebuilt(tmp_path,
     (out / "xnnpack" / "x-2k.pte").write_bytes(b"rebuilt")
     with pytest.raises(Ran):
         verify.run(out, "xnnpack", tmp_path / "work")
+
+
+def test_a_passing_verdict_against_another_reference_is_measured_again(tmp_path, reaches_smoke):
+    reference = tmp_path / "gate.json"
+    reference.write_text('{"corrected": true}')
+    old = hashlib.sha256(b"{}").hexdigest()
+    out = write(tmp_path, {"smoke": {"passed": True}, "gate": {"passed": True, "reference_sha256": old}})
+    with pytest.raises(Ran):
+        verify.run(out, "xnnpack", tmp_path / "work", gate_reference=reference)

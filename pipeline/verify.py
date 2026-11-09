@@ -50,7 +50,13 @@ def run(
         # leaves a smoke result behind, and skipping on that alone let a second run report
         # success with nothing gated (codex review, 2026-11-09).
         recorded = report.get("gate") or {}
-        gated = gate_reference is None or recorded.get("passed") or (accept_gate and recorded.get("override"))
+        # A verdict counts only against the reference that produced it: a corrected gate.json
+        # is measured again, not answered with the old verdict (codex review, round six).
+        reference_sha = exporting.sha256(gate_reference) if gate_reference is not None else None
+        same_reference = recorded.get("reference_sha256") == reference_sha
+        gated = gate_reference is None or (
+            same_reference and (recorded.get("passed") or (accept_gate and recorded.get("override")))
+        )
         # And only while the file is the one that was verified: a rebuilt .pte is a new file.
         listed = out_dir / report["files"][0]["path"]
         same = listed.is_file() and exporting.sha256(listed) == report["files"][0].get("sha256")
@@ -117,6 +123,7 @@ def run(
             if not verdict["passed"] and accept_gate:
                 verdict["override"] = {"reason": accept_gate}
                 print(f"    gate failed and accepted by the operator: {accept_gate}")
+            verdict["reference_sha256"] = exporting.sha256(gate_reference)
             report["gate"] = verdict
             gates.append(verdict)
 

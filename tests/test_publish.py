@@ -306,3 +306,27 @@ def test_a_file_that_is_not_the_one_its_report_describes_is_never_published(tmp_
     monkeypatch.setattr(publish.hub, "api", lambda: pytest.fail("reached the Hub"))
     with pytest.raises(ValueError, match="not the file its report describes"):
         publish.publish_hf(out, "xnnpack")
+
+
+def test_a_model_file_the_report_does_not_list_is_never_uploaded_from_the_root(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    (out / "xnnpack").mkdir(parents=True)
+    (out / "tokenizer.json").write_text("{}")
+    (out / "stray.pte").write_bytes(b"not verified")
+    (out / "xnnpack" / "Qwen3-1.7B-8da4w-2k.pte").write_bytes(b"pte")
+    (out / "xnnpack" / "export-report-2k.json").write_text(json.dumps(report(2048)))
+    monkeypatch.setattr(publish.hub, "api", lambda: pytest.fail("reached the Hub"))
+    with pytest.raises(ValueError, match="stray.pte.*not in the report"):
+        publish.publish_hf(out, "xnnpack")
+
+
+def test_a_release_never_attaches_a_model_file_its_report_does_not_list(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    (out / "xnnpack").mkdir(parents=True)
+    (out / "tokenizer.json").write_text("{}")
+    (out / "xnnpack" / "Qwen3-1.7B-8da4w-2k.pte").write_bytes(b"pte")
+    (out / "xnnpack" / "renamed.pte").write_bytes(b"not verified")
+    (out / "xnnpack" / "export-report-2k.json").write_text(json.dumps(report(2048)))
+    monkeypatch.setattr(publish.subprocess, "run", lambda *a, **k: pytest.fail("reached gh"))
+    with pytest.raises(ValueError, match="renamed.pte.*not in the report"):
+        publish.publish_release(out, "xnnpack")
