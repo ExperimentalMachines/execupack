@@ -98,6 +98,16 @@ WRITER_MARKER = "writer_batch_size=1,"
 # which get_master_rot_emb otherwise replaces with 10000 (docs/research, finding 37).
 ROPE_MARKER = 'self.rope_theta = float(kwargs.pop("rope_theta", 10000.0) or 10000.0)'
 ROPE_CONFIGS = {"qwen.py": "configuration_qwen.py", "llama.py": "configuration_llama.py"}
+# mediatek-gemma.patch: Gemma 3's chunk takes the sliding layers' RoPE table as an input of its
+# own, and gemma.py builds and feeds it. Unpatched, the graph gives every layer one table
+# (fp32 gate 6/11 or 5/11, docs/research finding 46) while runner_settings names two.
+GEMMA_PATCH = "patches/mediatek-gemma.patch"
+GEMMA3_MARKERS = {
+    "models/llm_models/modeling_gemma.py": (
+        "def forward(self, inputs_embeds, global_mask, local_mask, pos_emb, pos_emb_local, *cache):"
+    ),
+    "model_export_scripts/gemma.py": "def local_rot_emb(config):",
+}
 # third_party/executorch/patches/mediatek-lfm2.patch: lfm2.py calibrates every chunk in one
 # streaming pass over the long-context corpus (pipeline/mtk_corpus.py) and keeps no step, so
 # the Arrow round trip and the arrays patch do not apply to it.
@@ -314,6 +324,50 @@ def modal_shape(window: int) -> tuple[int, int] | None:
     return None
 
 
+def absolute_tool(tool_python: str) -> str:
+    """The tool python as a path that holds from any working directory; a bare command name is
+    left to PATH."""
+    return str(Path(tool_python).resolve()) if os.sep in tool_python else tool_python
+
+
+def absolute_inputs(
+    out_dir: Path, work_dir: Path, examples_dir: Path, tool_python: str
+) -> tuple[Path, Path, Path, str]:
+    """run()'s paths, made absolute before anything else: every subprocess it starts runs from
+    another directory (pipeline.mtk_corpus from the repo, the export script from the run's own
+    copy of the scripts), where a caller's relative path means something else (codex review of
+    #30)."""
+    return out_dir.resolve(), work_dir.resolve(), examples_dir.resolve(), absolute_tool(tool_python)
+
+
+def script_paths(tool_python: str, weight_dir: Path) -> tuple[str, Path]:
+    """The tool python and the weights' config.json as the script needs them: absolute, because
+    it runs in the run's own copy of the scripts (private_examples), where a relative --work or
+    tool path would point into that copy."""
+    return absolute_tool(tool_python), (weight_dir / "config.json").resolve()
+
+
+def private_examples(examples_dir: Path, work_dir: Path) -> Path:
+    """A copy of examples/mediatek (31 MB) in this run's work folder, to run the script in.
+
+    The scripts write their chunks to pte/<exp> under the working directory, and <exp>
+    (utils.get_exp_name) names the weights, precision and chunk count but not the window, so
+    two windows of one model shared the folder, and each run deletes it when done. On one host
+    (an EC2 box, 2026-11-09; CI gives every job its own runner) Gemma 3's 8k run finished
+    first and took the 16k run's chunk 0 with it. Its own copy keeps a run's chunks its own,
+    and goes with the work folder.
+    """
+    run_dir = (work_dir / "mediatek").resolve()
+    source = examples_dir.resolve()
+    # The copy is deleted and rebuilt below, so it may neither be the scripts nor hold them, nor
+    # sit inside them (codex review of #30, round five: --examples <work>/mediatek deleted them).
+    if run_dir == source or source.is_relative_to(run_dir) or run_dir.is_relative_to(source):
+        raise ExportError(f"--examples {source} overlaps the run's own copy at {run_dir}; keep it outside --work")
+    shutil.rmtree(run_dir, ignore_errors=True)
+    shutil.copytree(examples_dir, run_dir, symlinks=True, ignore=shutil.ignore_patterns("pte", "__pycache__"))
+    return run_dir
+
+
 def exp_name(weight_dir: Path, precision: str, chunks: int) -> str:
     """The name the scripts give the output folder and files (utils.get_exp_name)."""
     return f"{weight_dir.name}_{precision}_{chunks}_chunks"
@@ -346,6 +400,27 @@ def runner_settings(config: dict, recipe: settings.MtkRecipe, bos: int | None, e
         "eos_token": eos_token if eos_token is not None else (eos[0] if eos else None),
         "eos_tokens": eos,
         "tokenizer_type": "hf",
+        **gemma3_runner_settings(config),
+    }
+
+
+def gemma3_runner_settings(config: dict) -> dict:
+    """What a runner needs beyond the flags above to drive a Gemma 3 graph.
+
+    ``window_size``: the sliding layers' window, for the second mask the graph takes after the
+    global one (mtk_llama_executor_runner --window_size, MaskBuilder::enableSlidingWindow).
+    ``rot_emb_local_base``: the base of the second RoPE table, the input that follows the
+    global one in a graph built with mediatek-gemma.patch. ``rot_emb_base`` stays the global
+    layers' (rope_theta). Neither MediaTek's stock runner nor any shipped app feeds that second
+    table yet; one that does not cannot run these files correctly.
+    """
+    mtk = families.mtk_model_config(config)
+    if mtk.get("model_type") != "gemma3":
+        return {}
+    return {
+        "window_size": int(mtk["sliding_window_attention_size"]),
+        "rot_emb_local_base": float(mtk["rope_local_base_freq"]),
+        "rot_emb_inputs": ["global", "local"],
     }
 
 
@@ -405,6 +480,7 @@ def run(
     keep_work: bool = False,
     context: int | None = None,
 ) -> dict:
+    out_dir, work_dir, examples_dir, tool_python = absolute_inputs(out_dir, work_dir, examples_dir, tool_python)
     cfg = settings.load()
     recipe = cfg.mtk
     if soc not in SOC_PLATFORMS:
@@ -447,6 +523,10 @@ def run(
     script_text = script.read_text(encoding="utf-8")
     if not streaming and (PATCH_MARKER not in script_text or WRITER_MARKER not in script_text):
         raise ExportError(f"{script} lacks third_party/executorch/patches/mediatek-calibration-as-arrays.patch")
+    if families.text_config(families.mtk_model_config(source.config)).get("model_type") == "gemma3":
+        for relative, marker in GEMMA3_MARKERS.items():
+            if marker not in (examples_dir / relative).read_text(encoding="utf-8"):
+                raise ExportError(f"{examples_dir / relative} lacks the patch third_party/executorch/{GEMMA_PATCH}")
     if plan.script in ROPE_CONFIGS:
         config_file = examples_dir / "models" / "llm_models" / ROPE_CONFIGS[plan.script]
         if ROPE_MARKER not in config_file.read_text(encoding="utf-8"):
@@ -520,7 +600,10 @@ def run(
     tokenizer, licenses = copy_side_files(source, weight_dir, out_dir)
     # The MediaTek script reads the weights' own config.json: give it the keys it expects
     # (hub.normalize_config: the first LFM2 checkpoints spell them the older way).
-    model_config = hub.normalize_config(json.loads((weight_dir / "config.json").read_text(encoding="utf-8")))
+    # Gemma 3's keys in MediaTek's spelling (families.mtk_model_config).
+    model_config = families.mtk_model_config(
+        hub.normalize_config(json.loads((weight_dir / "config.json").read_text(encoding="utf-8")))
+    )
     if plan.tokenizer:
         model_config["tokenizer"] = plan.tokenizer
     (weight_dir / "config.json").write_text(json.dumps(model_config, indent=2), encoding="utf-8")
@@ -547,19 +630,23 @@ def run(
         )  # fmt: skip
         corpus = json.loads(summary_path.read_text(encoding="utf-8"))
 
-    command = export_command(tool_python, plan, recipe, soc, weight_dir / "config.json", dataset)
-    print("==> " + " ".join(command))
+    # The script runs in the run's own copy of the scripts, so every path handed to it is absolute:
+    # a relative --work (or tool python) would be read from that copy (codex review of #30).
+    tool, config_path = script_paths(tool_python, weight_dir)
+    command = export_command(tool, plan, recipe, soc, config_path, dataset)
+    run_dir = private_examples(examples_dir, work_dir)
+    print("==> " + " ".join(command) + f"  (in {run_dir})")
     export_started = time.time()
     env = tool_env(tool_python, dict(os.environ))
     with MemorySampler() as memory:
-        subprocess.run(command, check=True, cwd=examples_dir, env=env)
+        subprocess.run(command, check=True, cwd=run_dir, env=env)
     export_seconds = time.time() - export_started
 
     exp = exp_name(weight_dir, recipe.precision, plan.num_chunks)
-    built = [examples_dir / "pte" / exp / f"{exp}_{i}.pte" for i in range(plan.num_chunks)]
+    built = [run_dir / "pte" / exp / f"{exp}_{i}.pte" for i in range(plan.num_chunks)]
     missing = [p.name for p in built if not p.is_file()]
     if missing:
-        raise ExportError(f"the export wrote no {missing} in {examples_dir / 'pte' / exp}")
+        raise ExportError(f"the export wrote no {missing} in {run_dir / 'pte' / exp}")
     chunks = []
     for path, name in zip(built, chunk_names, strict=True):
         shutil.move(str(path), backend_dir / name)
@@ -653,6 +740,9 @@ def run(
         },
         "metadata": {},
         "smoke": check,
+        # What this window computes differently from Hugging Face (families.mtk_limits); the card
+        # states each.
+        **({"limits": limits} if (limits := families.mtk_limits(source.config, window)) else {}),
         "measuring_gate": gate.measuring_gate(check.get("stats")),
         "run": manifest.run_info(),
     }
@@ -661,8 +751,7 @@ def run(
     )
     (backend_dir / report_file(window)).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if not keep_work:
-        shutil.rmtree(work_dir, ignore_errors=True)
-        shutil.rmtree(examples_dir / "pte" / exp, ignore_errors=True)
+        shutil.rmtree(work_dir, ignore_errors=True)  # with the run's own copy of the scripts
     if not check["passed"]:
         raise ExportError("structural check failed: " + "; ".join(check["problems"]))
     return report

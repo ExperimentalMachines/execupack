@@ -25,7 +25,7 @@ CONFIG_METHODS = (
 )
 
 # Attribution the upstream licenses require of redistributed derivatives, keyed by the
-# app family token of the source name.
+# pipeline family token of the source name (naming.pipeline_family).
 NOTICES = {
     # Llama 3.2 Community License, section 1.b.iii.
     "llama32": (
@@ -34,6 +34,7 @@ NOTICES = {
     ),
     # Gemma Terms of Use, section 3.1.
     "gemma3": ("Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms\n"),
+    "gemma2": ("Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms\n"),
 }
 BUILT_WITH = {"llama32": "Built with Llama"}
 
@@ -143,7 +144,7 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         key=lambda r: (list(BACKEND_TITLES).index(r["backend"]), r.get("target") or "", r["window"]["context"]),
     )
     source = reports[0]["source"]
-    token = naming.app_family(naming.source_name(source["id"]))
+    token = naming.pipeline_family(naming.source_name(source["id"]))
     tags = sorted(set(hub_tags) | {r["backend"] for r in reports})
     upstream = f"https://huggingface.co/{source['id']}"
     revisions = sorted({r["source"]["sha"] for r in reports})
@@ -155,13 +156,28 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         if len(revisions) == 1
         else "revisions " + ", ".join(f"`{sha[:12]}`" for sha in revisions) + " (see each variant's `source_revision`)"
     )
+    # Only an XNNPACK or Vulkan file runs on any ExecuTorch runtime; an NPU file needs the runner
+    # its section names (codex review: a MediaTek-only Gemma 3 repo was promised to any runtime,
+    # and a repo with both kinds promised it for the NPU files too).
+    portable = any(r["backend"] in ("xnnpack", "vulkan") for r in reports)
+    npu = any(r["backend"] not in ("xnnpack", "vulkan") for r in reports)
+    runtime = f"ExecuTorch {reports[0]['toolchain']['executorch']} runtime"
+    app = "[openweights](https://github.com/alpharomercoma/openweights) Android app"
+    if portable and npu:
+        use = (
+            f"for on-device inference with the {app}. The CPU (XNNPACK) and GPU (Vulkan) files also run on "
+            f"any {runtime}; the NPU files need the runner their section below names."
+        )
+    elif portable:
+        use = f"for on-device inference with the {app} or any {runtime}."
+    else:
+        use = "for phone NPUs only: each file needs the runner its section below names, not a generic " + (
+            "ExecuTorch runtime."
+        )
     out += [
         f"# {naming.source_name(source['id'])} for ExecuTorch",
         "",
-        f"ExecuTorch exports of [{source['id']}]({upstream}) ({revision_text}) "
-        "for on-device inference with the "
-        "[openweights](https://github.com/alpharomercoma/openweights) Android app or any "
-        f"ExecuTorch {reports[0]['toolchain']['executorch']} runtime.",
+        f"ExecuTorch exports of [{source['id']}]({upstream}) ({revision_text}) " + use,
         "",
     ]
     if source.get("variant") == "base":
@@ -177,8 +193,12 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         # they run there today.
         out += [
             "The openweights app has no chat template for this model family yet, so it does not "
-            "load these files until it gains one. Any ExecuTorch runtime with the LLM runner's "
-            "custom ops runs them today"
+            "load these files until it gains one. "
+            + (
+                "Any ExecuTorch runtime with the LLM runner's custom ops runs them today"
+                if portable
+                else "The runner each backend needs is named below"
+            )
             + (
                 "."
                 if source.get("variant") == "base"
@@ -320,9 +340,28 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
             f"{sdk['build']} (mtk_converter {sdk['mtk_converter']}, mtk_neuron {sdk['mtk_neuron']}) "
             "from MediaTek Inc., used under MediaTek's license terms for that SDK. No MediaTek SDK or "
             "runtime library is included. They run on MediaTek's LLM runner from ExecuTorch "
-            "(`examples/mediatek/executor_runner`) with the device's NeuroPilot runtime; the settings it "
-            "needs are in each folder's `config.json`, under each variant's `runner`.",
+            "(`examples/mediatek/executor_runner`) with the device's NeuroPilot runtime. That runner takes "
+            "its settings as command-line flags and does not read `config.json`; the values to pass it are "
+            "in each folder's `config.json`, under each variant's `runner`.",
         ]
+        if any(r["runner"].get("rot_emb_local_base") for r in mtk):
+            # mediatek-gemma.patch: Gemma 3's graph takes the sliding layers' rotary table as an
+            # input of its own, which no runner ExecuTorch or the apps ship feeds yet.
+            local = next(r["runner"] for r in mtk if r["runner"].get("rot_emb_local_base"))
+            out += [
+                "",
+                "Variants whose `runner` lists `rot_emb_inputs: [global, local]` take two rotary-embedding "
+                "inputs, in that order after the masks: the global layers' table at `rot_emb_base` "
+                f"({local['rot_emb_base']:g}) and the sliding layers' at `rot_emb_local_base` "
+                f"({local['rot_emb_local_base']:g}), with a sliding-window mask of `window_size` "
+                f"({local['window_size']}) beside the global one. MediaTek's runner as ExecuTorch 1.5.1 ships "
+                "it builds one table and cannot run them correctly, and neither app feeds the second table "
+                "yet; a runner has to build both. With one table for every layer this model was measured "
+                "far from Hugging Face's (perplexity 22.7 against 9.6, fp32); with both it matches exactly.",
+            ]
+        limits = sorted({line for r in mtk for line in r.get("limits", [])})
+        if limits:
+            out += ["", *limits]
         if any(r["runner"].get("state_layout") == "per-layer" for r in mtk):
             # MediaTek's stock runner counts 2 * num_layer / num_chunk caches per chunk and
             # refuses these files at load, so the card has to say which runner reads them.

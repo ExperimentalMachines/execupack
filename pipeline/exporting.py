@@ -220,7 +220,9 @@ def copy_side_files(source: hub.SourceModel, src_dir: Path, out_dir: Path) -> tu
         if (src_dir / name).exists():
             shutil.copy2(src_dir / name, out_dir / name)
             licenses.append(name)
-    token = naming.app_family(naming.source_name(source.id))
+    # The pipeline's family, not the app's: a family exported ahead of the app (Gemma 2) is
+    # still under its license's notice requirement.
+    token = naming.pipeline_family(naming.source_name(source.id))
     if token in manifest.NOTICES:
         (out_dir / "NOTICE").write_text(manifest.NOTICES[token], encoding="utf-8")
     return tokenizer, licenses

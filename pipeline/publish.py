@@ -84,6 +84,28 @@ def require_vouched(report: dict, paths: list[str]) -> None:
         raise ValueError(f"{unvouched} would be uploaded but are not in the report; nothing vouches for them")
 
 
+def shared_file_clashes(report: dict, retained: list[dict]) -> list[tuple[dict, str]]:
+    """The other windows whose reports list a file this run uploads (MediaTek's embedding
+    table, one per folder) with different bytes, each with what differs.
+
+    Replacing that file from another source revision would leave those windows' chunks running
+    on weights their reports never measured, under digests that no longer match (codex review
+    of #30). A rerun from the same revision writes the same bytes and clashes with nothing.
+    """
+    ours = {entry["path"]: entry.get("sha256") for entry in report["files"]}
+    clashes = []
+    for other in retained:
+        differ = [
+            f"{entry['path']} ({str(entry.get('sha256'))[:12]} in the "
+            f"{naming.window_label(other['window']['context'])} report, {str(ours[entry['path']])[:12]} in this run's)"
+            for entry in other.get("files", [])
+            if entry["path"] in ours and entry.get("sha256") != ours[entry["path"]]
+        ]
+        if differ:
+            clashes.append((other, "; ".join(differ)))
+    return clashes
+
+
 def require_publishable(report: dict) -> None:
     """Refuse a report that has not passed every check its recipe calls for.
 
@@ -188,10 +210,16 @@ def publish_hf(
     context: int | None = None,
     attempts: int = 6,
     allow_unpublished_twin: bool = False,
+    replace_shared: bool = False,
 ) -> str:
     """Commit this run's window into its backend folder beside the other windows, plus the
     shared root files; regenerate the folder's config.json and the repo README.md from
     every report in the repo.
+
+    A run whose shared file (MediaTek's embedding) differs from the one the folder's other
+    windows were built on is refused; with ``replace_shared`` those windows are withdrawn in
+    the same commit, so the folder never mixes tables, and are republished from this run's
+    revision afterwards, one run each.
 
     Runs publish on their own, possibly at the same moment as another (other windows, other
     backends), so the commit is pinned to the revision the README was rendered from and
@@ -259,12 +287,56 @@ def publish_hf(
         if orphaned:
             dropped = {id(by_path[p]) for p in orphaned if p in by_path}
             reports = [r for r in reports if id(r) not in dropped]
+        others = [r for r in reports if r is not report]
+        # Only this folder's windows can be withdrawn (its config.json is the one rebuilt here); a
+        # clash with another backend's report cannot be settled by this run and is refused outright
+        # (codex review of #30, round four).
+        foreign = shared_file_clashes(report, [r for r in others if _folder(r["backend"], r.get("target")) != folder])
+        if foreign:
+            raise ValueError(
+                "this run's files differ from what another backend's reports record: "
+                + "; ".join(why for _, why in foreign)
+                + ". Withdrawing windows in this folder cannot settle that."
+            )
+        clashes = shared_file_clashes(report, [r for r in others if _folder(r["backend"], r.get("target")) == folder])
+        withdrawn: list[str] = []
+        if clashes and not replace_shared:
+            raise ValueError(
+                "this run's shared files differ from those other published windows were built on: "
+                + "; ".join(why for _, why in clashes)
+                + ". Pass --replace-shared to withdraw those windows in the same commit, then republish "
+                "each from this run's revision."
+            )
+        if clashes:
+            gone = {id(other) for other, _ in clashes}
+            reports = [r for r in reports if id(r) not in gone]
+            # Only each withdrawn window's own files go: those in this folder that carry its window
+            # in their name, and its report. A file any kept report (this run's included) still
+            # lists, an unlabelled shared file, or a path in another folder is never touched, so a
+            # withdrawal cannot take a file a window that stays depends on (codex review of #30,
+            # round three).
+            kept = {entry["path"] for r in reports for entry in r.get("files", [])}
+            withdrawn = [path for path, other in by_path.items() if id(other) in gone]
+            for other, _ in clashes:
+                own = naming.window_label(other["window"]["context"])
+                withdrawn += [
+                    entry["path"]
+                    for entry in other["files"]
+                    if entry["path"].startswith(f"{folder}/")
+                    and "/" not in entry["path"][len(folder) + 1 :]
+                    and window_of(entry["path"].rsplit("/", 1)[-1]) == own
+                ]
+                migrated.pop(f"{folder}/{exporting.report_file(other['window']['context'])}", None)
+            withdrawn = sorted(
+                {p for p in withdrawn if p in existing and p not in stale and p not in new_paths and p not in kept}
+            )
         folder_reports = [r for r in reports if _folder(r["backend"], r.get("target")) == folder]
         config = json.dumps(manifest.backend_config(folder_reports), indent=2) + "\n"
         license_files = sorted({f for r in reports for f in r["source"].get("license_files", [])})
         readme = manifest.readme(repo_id, reports, list(cfg.hub_tags), license_files)
 
         operations = [CommitOperationDelete(path_in_repo=path) for path in stale if path not in new_paths]
+        operations += [CommitOperationDelete(path_in_repo=path) for path in withdrawn]
         operations += [
             CommitOperationAdd(path_in_repo=k, path_or_fileobj=str(v))
             for k, v in new_paths.items()
@@ -275,6 +347,9 @@ def publish_hf(
         operations += [CommitOperationAdd(path_in_repo=k, path_or_fileobj=str(v)) for k, v in root_files.items()]
         operations.append(CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=readme.encode("utf-8")))
         message = f"{folder} {label}: {report['source']['id']}@{report['source']['sha'][:12]}"
+        if clashes:
+            labels = sorted({naming.window_label(other["window"]["context"]) for other, _ in clashes})
+            message += f"; withdraws {', '.join(labels)}, built on another shared file"
         if orphaned:
             operations += [CommitOperationDelete(path_in_repo=p) for p in orphaned]
             gpu_reports = [r for r in reports if _folder(r["backend"], r.get("target")) == "vulkan"]

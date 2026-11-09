@@ -115,3 +115,12 @@ def test_phi4_mini_is_named_with_its_size_and_reads_as_phi4mini_in_the_app():
         assert naming.check_app_rules(repo, path, backend) == []
         assert naming.app_family(naming.app_model_name(repo, path)) == "phi4mini"
     assert naming.app_size_hint(repo.split("/")[1]) == "3.8B"
+
+
+def test_gemma2_is_exported_ahead_of_the_apps_with_its_notice():
+    from pipeline import manifest
+
+    assert naming.app_family("gemma-2-2b-it") is None  # neither app has a Gemma 2 template
+    assert naming.pipeline_family("gemma-2-2b-it") == "gemma2"
+    assert naming.ahead_of_app("gemma-2-2b-it")
+    assert "Gemma Terms of Use" in manifest.NOTICES["gemma2"]

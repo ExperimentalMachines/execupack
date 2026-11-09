@@ -84,11 +84,17 @@ def test_llama_family_covers_llama32_and_smollm2():
     assert evaluate("HuggingFaceTB/SmolLM2-360M-Instruct").eligible
 
 
-def test_gemma3_goes_to_qnn_only():
+def test_gemma3_goes_to_qnn_and_mediatek():
     verdict = evaluate("google/gemma-3-1b-it")
     assert verdict.reasons == []
-    assert verdict.export_backends == ["qnn"]
+    assert verdict.export_backends == ["qnn", "mtk"]
     assert "export_llm" in verdict.backends["xnnpack"]
+
+
+def test_gemma2_goes_nowhere_its_head_is_over_mediateks_2gb_converter_cap(source):
+    verdict = eligibility.evaluate(source("google/gemma-2-2b-it"), settings.load())
+    assert (verdict.family, verdict.variant, verdict.export_backends) == ("gemma2", "instruct", [])
+    assert "2,359,296,000 bytes" in verdict.backends["mtk"] and "2 GB" in verdict.backends["mtk"]
 
 
 def test_gated_repo_without_access_says_what_to_do():

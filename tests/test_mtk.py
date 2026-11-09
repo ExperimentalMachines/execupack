@@ -1,11 +1,12 @@
 import dataclasses
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 from conftest import MTK_FLEET, TOTAL_PARAMS, hf_config, load_json
 
-from pipeline import export_mtk, families, manifest, naming, publish, settings
+from pipeline import eligibility, export_mtk, families, manifest, naming, publish, settings
 
 CFG = settings.load()
 # The runner choice is tested on a three-size fleet (conftest); the configured tier is one.
@@ -485,3 +486,200 @@ def test_the_patches_carry_what_the_export_checks_for():
     assert sum(export_mtk.ROPE_MARKER in line for line in rope.splitlines() if line.startswith("+")) == 2
     for config in export_mtk.ROPE_CONFIGS.values():
         assert f"+++ b/examples/mediatek/models/llm_models/{config}" in rope
+    gemma = (patches / "mediatek-gemma.patch").read_text(encoding="utf-8")
+    for relative, marker in export_mtk.GEMMA3_MARKERS.items():
+        assert f"+++ b/examples/mediatek/{relative}" in gemma
+        assert sum(line[1:].strip() == marker for line in gemma.splitlines() if line.startswith("+")) == 1
+
+
+def test_gemma3_config_is_written_in_mediateks_spelling():
+    mtk = families.mtk_model_config(hf_config("google/gemma-3-1b-it"))
+    assert mtk["model_type"] == "gemma3"  # HF says gemma3_text; configuration_gemma reads gemma3
+    assert mtk["sliding_window_attention_size"] == 512  # MediaTek's default is 1024
+    assert mtk["global_local_attention_pattern"] == ["SLIDING_LOCAL"] * 5 + ["GLOBAL"]
+    assert mtk["use_res_clamp"] is False  # HF clamps no residual; MediaTek's default does
+    assert families.mtk_model_config(hf_config("Qwen/Qwen3-0.6B")) == hf_config("Qwen/Qwen3-0.6B")
+
+
+def test_a_gemma3_layer_pattern_that_does_not_repeat_is_refused():
+    config = {**hf_config("google/gemma-3-1b-it"), "sliding_window_pattern": None}
+    config["layer_types"] = ["sliding_attention"] * 5 + ["full_attention"] + ["full_attention"] * 20
+    with pytest.raises(families.UnsupportedModel, match="one period"):
+        families.mtk_model_config(config)
+
+
+def test_gemma3_runs_gemma_py_and_its_runner_config_names_both_rope_tables():
+    config = hf_config("google/gemma-3-1b-it")
+    assert families.family_for(config).key == "gemma3"
+    plan = families.mtk_plan(families.family_for(config), config, CFG.mtk.max_chunks)
+    assert (plan.script, plan.preformatter, plan.num_chunks) == ("gemma.py", "gemma.json", 2)  # 26 layers
+    three = export_mtk.runner_settings(hf_config("google/gemma-3-1b-it"), CFG.mtk, 2, [1, 106])
+    assert (three["rot_emb_base"], three["rot_emb_local_base"], three["window_size"]) == (1e6, 10000.0, 512)
+    assert three["rot_emb_inputs"] == ["global", "local"]
+    two = export_mtk.runner_settings(hf_config("google/gemma-2-2b-it"), CFG.mtk, 2, [1, 107])
+    assert two["rot_emb_base"] == 10000.0 and "rot_emb_local_base" not in two and "window_size" not in two
+
+
+def test_a_head_over_mtk_converters_2gb_protobuf_is_refused_at_any_chunk_count():
+    gemma2 = hf_config("google/gemma-2-2b-it")
+    assert families.family_for(gemma2).key == "gemma2"
+    assert families.mtk_head_bytes(gemma2) == 256000 * 2304 * 4  # measured refused, 2026-11-09
+    for chunks in (2, 13, 26):
+        with pytest.raises(families.UnsupportedModel, match="2 GB"):
+            families.mtk_plan(families.family_for(gemma2), gemma2, chunks)
+    assert families.mtk_head_bytes(hf_config("google/gemma-3-1b-it")) == 262144 * 1152 * 4  # 1.2 GB, built
+
+
+def gemma_report(model, window, **runner):
+    report = mtk_report()
+    name = model.rsplit("/", 1)[-1]
+    report["source"] = {"id": model, "sha": "0" * 12, "license": {"license": "gemma"}}
+    report["output_repo"] = f"experimentalmachines/{name}-ExecuTorch"
+    report["window"] = {"context": window, "kv_cache_bytes_per_token": None}
+    report["runner"] = {**report["runner"], **runner}
+    limits = families.mtk_limits(hf_config(model), window)
+    if limits:
+        report["limits"] = limits
+    return report
+
+
+def test_a_mediatek_only_family_ahead_of_the_app_is_not_promised_to_any_runtime():
+    text = manifest.readme(
+        "experimentalmachines/gemma-2-2b-it-ExecuTorch", [gemma_report("google/gemma-2-2b-it", 2048)], [], []
+    )
+    assert "no chat template for this model family yet" in text
+    assert "Any ExecuTorch runtime" not in text  # the MediaTek files need MediaTek's runner
+    assert "or any ExecuTorch" not in text  # nor in the opening sentence
+
+
+def test_an_npu_only_card_promises_no_generic_runtime_and_a_portable_one_does():
+    gemma3 = [gemma_report("google/gemma-3-1b-it", 512)]
+    opening = manifest.readme("experimentalmachines/gemma-3-1b-it-ExecuTorch", gemma3, [], [])
+    assert "for phone NPUs only" in opening and "or any ExecuTorch" not in opening
+    assert "does not read `config.json`" in opening  # MediaTek's runner takes flags
+    # With CPU or GPU files beside the NPU ones, only those are promised to any runtime.
+    mixed = [*gemma3, {**gemma3[0], "backend": "xnnpack"}]
+    text = manifest.readme("experimentalmachines/gemma-3-1b-it-ExecuTorch", mixed, [], [])
+    assert "The CPU (XNNPACK) and GPU (Vulkan) files also run on any ExecuTorch" in text
+    assert "the NPU files need the runner their section below names" in text
+    assert "Android app or any ExecuTorch" not in text
+
+
+def test_gemma2_past_its_sliding_window_says_what_it_computes_differently():
+    assert families.mtk_limits(hf_config("google/gemma-2-2b-it"), 4096) == []
+    reports = [gemma_report("google/gemma-2-2b-it", 4096), gemma_report("google/gemma-2-2b-it", 8192)]
+    text = manifest.readme("experimentalmachines/gemma-2-2b-it-ExecuTorch", reports, [], [])
+    assert text.count("over the whole 8,192-token window in MediaTek's graph") == 1
+    assert "prompts up to 4,096 tokens are computed as Hugging Face computes them" in text
+
+
+def test_the_gemma3_card_says_its_runner_must_feed_both_rope_tables():
+    runner = export_mtk.runner_settings(hf_config("google/gemma-3-1b-it"), CFG.mtk, 2, [1, 106])
+    report = gemma_report(
+        "google/gemma-3-1b-it",
+        2048,
+        **{k: runner[k] for k in ("rot_emb_base", "rot_emb_local_base", "window_size", "rot_emb_inputs")},
+    )
+    text = manifest.readme("experimentalmachines/gemma-3-1b-it-ExecuTorch", [report], [], [])
+    assert "`rot_emb_inputs: [global, local]`" in text
+    assert "rot_emb_local_base` (10000)" in text and "`window_size` (512)" in text
+    assert "cannot run them correctly" in text
+    plain = manifest.readme("experimentalmachines/Qwen3-0.6B-ExecuTorch", [mtk_report()], [], [])
+    assert "rot_emb_inputs" not in plain
+
+
+def test_each_run_builds_in_its_own_copy_of_the_scripts(tmp_path):
+    # Two windows of one model on one host shared pte/<exp>, which has no window in its name,
+    # and the first run to finish deleted the other's chunk (2026-11-09).
+    examples = tmp_path / "examples" / "mediatek"
+    (examples / "model_export_scripts").mkdir(parents=True)
+    (examples / "model_export_scripts" / "gemma.py").write_text("# script\n")
+    (examples / "pte" / "gemma-3-1b-it_A16W8_2_chunks").mkdir(parents=True)
+    (examples / "pte" / "gemma-3-1b-it_A16W8_2_chunks" / "stale_0.pte").write_bytes(b"x")
+    (examples / "model_export_scripts" / "__pycache__").mkdir()
+    runs = [export_mtk.private_examples(examples, tmp_path / f"work-{w}") for w in (8192, 16384)]
+    assert runs[0] != runs[1] and all(r.is_absolute() for r in runs)
+    for run in runs:
+        assert (run / "model_export_scripts" / "gemma.py").read_text() == "# script\n"
+        assert not (run / "pte").exists() and not (run / "model_export_scripts" / "__pycache__").exists()
+    (runs[0] / "leftover").write_text("from a crashed run")
+    again = export_mtk.private_examples(examples, tmp_path / "work-8192")
+    assert again == runs[0] and not (again / "leftover").exists()
+    assert (examples / "pte" / "gemma-3-1b-it_A16W8_2_chunks" / "stale_0.pte").exists()  # never touched
+
+
+def test_gemma3_is_refused_on_scripts_without_the_two_table_patch(tmp_path, monkeypatch, source):
+    examples = tmp_path / "mediatek"
+    (examples / "model_export_scripts").mkdir(parents=True)
+    (examples / "models" / "llm_models").mkdir(parents=True)
+    calibrated = f"{export_mtk.PATCH_MARKER}\n{export_mtk.WRITER_MARKER}\n"
+    (examples / "model_export_scripts" / "gemma.py").write_text(calibrated)
+    (examples / "models" / "llm_models" / "modeling_gemma.py").write_text("def forward(self, *args): ...\n")
+    monkeypatch.setattr(export_mtk.hub, "fetch", lambda model_id, revision: source(model_id))
+    with pytest.raises(export_mtk.ExportError, match="modeling_gemma.py lacks the patch.*mediatek-gemma.patch"):
+        export_mtk.run("google/gemma-3-1b-it", "main", "MT6991", tmp_path, tmp_path, "p", examples)
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"layer_types": ["sliding_attention"] * 26, "sliding_window_pattern": None}, "no full_attention"),
+        ({"layer_types": ["chunked_attention"] * 26, "sliding_window_pattern": None}, "no MediaTek layer"),
+        ({"sliding_window": None}, "no sliding_window"),
+    ],
+)
+def test_a_gemma3_config_mediatek_cannot_translate_is_a_verdict_not_a_crash(change, reason, source):
+    # Anything but UnsupportedModel would end the watcher's whole pass (codex review of #30).
+    config = {**hf_config("google/gemma-3-1b-it"), **change}
+    with pytest.raises(families.UnsupportedModel, match=reason):
+        families.mtk_model_config(config)
+    verdict = eligibility.evaluate(source("google/gemma-3-1b-it", config), CFG)
+    assert reason in verdict.backends["mtk"]
+
+
+def test_the_script_gets_absolute_paths_though_it_runs_in_the_runs_own_copy(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    tool, config = export_mtk.script_paths("venv/bin/python", Path("work/weights/m"))
+    assert tool == str(tmp_path / "venv/bin/python") and config == tmp_path / "work/weights/m/config.json"
+    assert export_mtk.script_paths("python3", Path("w"))[0] == "python3"  # found on PATH, left alone
+    assert export_mtk.absolute_tool("venv/bin/python") == str(tmp_path / "venv/bin/python")
+
+
+def test_run_makes_its_paths_absolute_before_anything_else(tmp_path, monkeypatch):
+    # pipeline.mtk_corpus runs from the repo before the script's paths were resolved, so a
+    # relative --work broke LFM2's streaming calibration (codex review of #30, round two).
+    monkeypatch.chdir(tmp_path)
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    def spy(*args):
+        seen.append(args)
+        raise Stop
+
+    original = export_mtk.absolute_inputs
+    monkeypatch.setattr(export_mtk, "absolute_inputs", spy)
+    with pytest.raises(Stop):
+        export_mtk.run("Qwen/Qwen3-0.6B", "main", "MT6991", Path("out"), Path("work"), "venv/bin/python", Path("ex"))
+    assert seen == [(Path("out"), Path("work"), Path("ex"), "venv/bin/python")]
+    assert original(Path("out"), Path("work"), Path("ex"), "venv/bin/python") == (
+        tmp_path / "out",
+        tmp_path / "work",
+        tmp_path / "ex",
+        str(tmp_path / "venv/bin/python"),
+    )
+
+
+def test_the_runs_copy_never_overlaps_the_scripts_it_copies(tmp_path):
+    # --examples <work>/mediatek made the copy the source itself: rmtree took the scripts
+    # (codex review of #30, round five).
+    work = tmp_path / "work"
+    scripts = work / "mediatek"
+    (scripts / "model_export_scripts").mkdir(parents=True)
+    (scripts / "model_export_scripts" / "gemma.py").write_text("# script\n")
+    with pytest.raises(export_mtk.ExportError, match="overlaps the run's own copy"):
+        export_mtk.private_examples(scripts, work)
+    assert (scripts / "model_export_scripts" / "gemma.py").exists()  # untouched
+    with pytest.raises(export_mtk.ExportError, match="overlaps"):
+        export_mtk.private_examples(tmp_path, work)  # the copy would land inside the scripts
