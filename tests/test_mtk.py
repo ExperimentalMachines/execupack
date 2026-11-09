@@ -503,7 +503,7 @@ def test_a_gemma3_layer_pattern_that_does_not_repeat_is_refused():
         families.mtk_model_config(config)
 
 
-def test_gemma_runs_gemma_py_and_gemma3s_runner_feeds_both_rope_tables():
+def test_gemma3_runs_gemma_py_and_its_runner_config_names_both_rope_tables():
     config = hf_config("google/gemma-3-1b-it")
     assert families.family_for(config).key == "gemma3"
     plan = families.mtk_plan(families.family_for(config), config, CFG.mtk.max_chunks)
@@ -544,6 +544,16 @@ def test_a_mediatek_only_family_ahead_of_the_app_is_not_promised_to_any_runtime(
     )
     assert "no chat template for this model family yet" in text
     assert "Any ExecuTorch runtime" not in text  # the MediaTek files need MediaTek's runner
+    assert "or any ExecuTorch" not in text  # nor in the opening sentence
+
+
+def test_an_npu_only_card_promises_no_generic_runtime_and_a_portable_one_does():
+    gemma3 = [gemma_report("google/gemma-3-1b-it", 512)]
+    opening = manifest.readme("experimentalmachines/gemma-3-1b-it-ExecuTorch", gemma3, [], [])
+    assert "for phone NPUs only" in opening and "or any ExecuTorch" not in opening
+    assert "does not read `config.json`" in opening  # MediaTek's runner takes flags
+    mixed = [*gemma3, {**gemma3[0], "backend": "xnnpack"}]
+    assert "or any ExecuTorch" in manifest.readme("experimentalmachines/gemma-3-1b-it-ExecuTorch", mixed, [], [])
 
 
 def test_gemma2_past_its_sliding_window_says_what_it_computes_differently():

@@ -156,13 +156,21 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         if len(revisions) == 1
         else "revisions " + ", ".join(f"`{sha[:12]}`" for sha in revisions) + " (see each variant's `source_revision`)"
     )
+    # Only an XNNPACK or Vulkan file runs on any ExecuTorch runtime; an NPU file needs the runner
+    # its section names (codex review: a MediaTek-only Gemma 3 repo was promised to any runtime).
+    portable = any(r["backend"] in ("xnnpack", "vulkan") for r in reports)
     out += [
         f"# {naming.source_name(source['id'])} for ExecuTorch",
         "",
         f"ExecuTorch exports of [{source['id']}]({upstream}) ({revision_text}) "
-        "for on-device inference with the "
-        "[openweights](https://github.com/alpharomercoma/openweights) Android app or any "
-        f"ExecuTorch {reports[0]['toolchain']['executorch']} runtime.",
+        + (
+            "for on-device inference with the "
+            "[openweights](https://github.com/alpharomercoma/openweights) Android app or any "
+            f"ExecuTorch {reports[0]['toolchain']['executorch']} runtime."
+            if portable
+            else "for phone NPUs only: each file needs the runner its section below names, not a "
+            "generic ExecuTorch runtime."
+        ),
         "",
     ]
     if source.get("variant") == "base":
@@ -176,9 +184,6 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         # The app picks the chat template from the name and has none for this family yet, so
         # it refuses these files until it gains one; the card says so instead of implying
         # they run there today.
-        # Only an XNNPACK or Vulkan file runs on any ExecuTorch runtime; NPU files need their own
-        # runner, which the MediaTek section below names (codex review: Gemma 2 is MediaTek-only).
-        portable = any(r["backend"] in ("xnnpack", "vulkan") for r in reports)
         out += [
             "The openweights app has no chat template for this model family yet, so it does not "
             "load these files until it gains one. "
@@ -328,8 +333,9 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
             f"{sdk['build']} (mtk_converter {sdk['mtk_converter']}, mtk_neuron {sdk['mtk_neuron']}) "
             "from MediaTek Inc., used under MediaTek's license terms for that SDK. No MediaTek SDK or "
             "runtime library is included. They run on MediaTek's LLM runner from ExecuTorch "
-            "(`examples/mediatek/executor_runner`) with the device's NeuroPilot runtime; the settings it "
-            "needs are in each folder's `config.json`, under each variant's `runner`.",
+            "(`examples/mediatek/executor_runner`) with the device's NeuroPilot runtime. That runner takes "
+            "its settings as command-line flags and does not read `config.json`; the values to pass it are "
+            "in each folder's `config.json`, under each variant's `runner`.",
         ]
         if any(r["runner"].get("rot_emb_local_base") for r in mtk):
             # mediatek-gemma.patch: Gemma 3's graph takes the sliding layers' rotary table as an
