@@ -642,3 +642,4 @@ def test_the_script_gets_absolute_paths_though_it_runs_in_the_runs_own_copy(tmp_
     tool, config = export_mtk.script_paths("venv/bin/python", Path("work/weights/m"))
     assert tool == str(tmp_path / "venv/bin/python") and config == tmp_path / "work/weights/m/config.json"
     assert export_mtk.script_paths("python3", Path("w"))[0] == "python3"  # found on PATH, left alone
+    assert export_mtk.absolute_tool("venv/bin/python") == str(tmp_path / "venv/bin/python")

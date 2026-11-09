@@ -560,19 +560,21 @@ def mtk_window(context, embedding_sha):
         },
         {"path": "mtk/mt6991/Qwen3-1.7B-neuropilot-embedding-fp32.bin", "bytes": 3, "sha256": embedding_sha},
     ]
+    # What a MediaTek report carries for config.json and the card (export_mtk.run).
+    r["runner"] = {"token_embedding_path": "Qwen3-1.7B-neuropilot-embedding-fp32.bin"}
+    r["neuropilot"] = {"build": "8.0.8", "mtk_converter": "8.13.0", "mtk_neuron": "8.2.23"}
     return r
 
 
 def test_a_shared_file_must_match_what_the_other_windows_reports_describe():
     same, other = hashlib.sha256(b"emb").hexdigest(), hashlib.sha256(b"newer weights").hexdigest()
-    publish.require_shared_files_agree(mtk_window(16384, same), [mtk_window(8192, same)])  # a rerun from one revision
-    with pytest.raises(ValueError, match=r"embedding-fp32.bin \(the 8k window's report has"):
-        publish.require_shared_files_agree(mtk_window(16384, other), [mtk_window(8192, same)])
+    assert publish.shared_file_clashes(mtk_window(16384, same), [mtk_window(8192, same)]) == []  # one revision
+    [(clash, why)] = publish.shared_file_clashes(mtk_window(16384, other), [mtk_window(8192, same)])
+    assert clash["window"]["context"] == 8192 and "embedding-fp32.bin" in why and "8k report" in why
 
 
-def test_publish_hf_refuses_to_swap_the_embedding_other_mediatek_windows_run_on(tmp_path, monkeypatch):
-    # Publishing a 16k export built from a newer revision would have replaced the folder's one
-    # embedding table under the published 8k chunks (codex review of #30).
+def mtk_repo(tmp_path, monkeypatch):
+    """A MediaTek folder holding an 8k window on embedding A, and a 16k export on embedding B."""
     out = tmp_path / "out"
     (out / "mtk" / "mt6991").mkdir(parents=True)
     (out / "tokenizer.json").write_text("{}")
@@ -580,11 +582,13 @@ def test_publish_hf_refuses_to_swap_the_embedding_other_mediatek_windows_run_on(
     (out / "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-16k-chunk1of1.pte").write_bytes(b"pte")
     (out / "mtk/mt6991/Qwen3-1.7B-neuropilot-embedding-fp32.bin").write_bytes(b"newer weights")
     (out / "mtk/mt6991/export-report-16k.json").write_text(json.dumps(new))
+    (out / "mtk/mt6991/config.json").write_text(json.dumps(manifest.backend_config(new)))  # as export_mtk writes it
     remote = {
         "README.md": None,
         "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-8k-chunk1of1.pte": None,
         "mtk/mt6991/Qwen3-1.7B-neuropilot-embedding-fp32.bin": None,
         "mtk/mt6991/export-report-8k.json": mtk_window(8192, hashlib.sha256(b"emb").hexdigest()),
+        "mtk/mt6991/config.json": None,
     }
     hub = FakeHub(remote)
     monkeypatch.setattr(publish.hub, "api", lambda: hub)
@@ -598,6 +602,28 @@ def test_publish_hf_refuses_to_swap_the_embedding_other_mediatek_windows_run_on(
     import huggingface_hub
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
-    with pytest.raises(ValueError, match="other published windows depend on"):
+    return out, hub
+
+
+def test_publish_hf_refuses_to_swap_the_embedding_other_mediatek_windows_run_on(tmp_path, monkeypatch):
+    # Publishing a 16k export built from a newer revision would have replaced the folder's one
+    # embedding table under the published 8k chunks (codex review of #30).
+    out, hub = mtk_repo(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="Pass --replace-shared"):
         publish.publish_hf(out, "mtk", "mt6991")
     assert hub.commits == []
+
+
+def test_replace_shared_withdraws_the_windows_built_on_the_old_table_in_the_same_commit(tmp_path, monkeypatch):
+    # Without a way through, a revision change could never be published: every window would be
+    # refused for the others still on the old table (codex review of #30, round two).
+    out, hub = mtk_repo(tmp_path, monkeypatch)
+    publish.publish_hf(out, "mtk", "mt6991", replace_shared=True)
+    [(operations, message, _)] = hub.commits
+    deleted = sorted(op.path_in_repo for op in operations if type(op).__name__ == "CommitOperationDelete")
+    added = {op.path_in_repo: op for op in operations if type(op).__name__ == "CommitOperationAdd"}
+    assert deleted == ["mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-8k-chunk1of1.pte", "mtk/mt6991/export-report-8k.json"]
+    assert "mtk/mt6991/Qwen3-1.7B-neuropilot-embedding-fp32.bin" in added  # the new table, not deleted
+    config = json.loads(added["mtk/mt6991/config.json"].path_or_fileobj)
+    assert [v["context"] for v in config["variants"]] == [16384]
+    assert "withdraws 8k" in message

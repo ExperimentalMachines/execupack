@@ -392,6 +392,7 @@ def _publish_hf(args) -> int:
             args.target,
             args.context,
             allow_unpublished_twin=getattr(args, "allow_unpublished_twin", False),
+            replace_shared=getattr(args, "replace_shared", False),
         )
     )
     return 0
@@ -671,6 +672,13 @@ def main(argv: list[str] | None = None) -> int:
                 "--allow-unpublished-twin",
                 action="store_true",
                 help="publish a GPTQ Vulkan file whose gate-proxy XNNPACK twin is deliberately not on the Hub",
+            )
+        if name == "publish-hf":
+            command.add_argument(
+                "--replace-shared",
+                action="store_true",
+                help="replace a shared file (MediaTek's embedding) the folder's other windows were built on, "
+                "withdrawing those windows in the same commit",
             )
         command.set_defaults(func=func)
 

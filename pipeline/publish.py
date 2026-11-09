@@ -84,25 +84,26 @@ def require_vouched(report: dict, paths: list[str]) -> None:
         raise ValueError(f"{unvouched} would be uploaded but are not in the report; nothing vouches for them")
 
 
-def require_shared_files_agree(report: dict, retained: list[dict]) -> None:
-    """A file this run uploads that other windows' reports also list (MediaTek's embedding
-    table, one per folder) is the same bytes they describe: replacing it from another source
-    revision would leave those windows' chunks running on weights their reports never
-    measured, under digests that no longer match (codex review of #30)."""
+def shared_file_clashes(report: dict, retained: list[dict]) -> list[tuple[dict, str]]:
+    """The other windows whose reports list a file this run uploads (MediaTek's embedding
+    table, one per folder) with different bytes, each with what differs.
+
+    Replacing that file from another source revision would leave those windows' chunks running
+    on weights their reports never measured, under digests that no longer match (codex review
+    of #30). A rerun from the same revision writes the same bytes and clashes with nothing.
+    """
     ours = {entry["path"]: entry.get("sha256") for entry in report["files"]}
-    clashes = sorted(
-        f"{entry['path']} (the {naming.window_label(other['window']['context'])} window's report has "
-        f"{str(entry.get('sha256'))[:12]}, this run's is {str(ours[entry['path']])[:12]})"
-        for other in retained
-        for entry in other.get("files", [])
-        if entry["path"] in ours and entry.get("sha256") != ours[entry["path"]]
-    )
-    if clashes:
-        raise ValueError(
-            "this run would replace files other published windows depend on: "
-            + "; ".join(clashes)
-            + ". Re-export those windows from the same revision and publish them together."
-        )
+    clashes = []
+    for other in retained:
+        differ = [
+            f"{entry['path']} ({str(entry.get('sha256'))[:12]} in the "
+            f"{naming.window_label(other['window']['context'])} report, {str(ours[entry['path']])[:12]} in this run's)"
+            for entry in other.get("files", [])
+            if entry["path"] in ours and entry.get("sha256") != ours[entry["path"]]
+        ]
+        if differ:
+            clashes.append((other, "; ".join(differ)))
+    return clashes
 
 
 def require_publishable(report: dict) -> None:
@@ -209,10 +210,16 @@ def publish_hf(
     context: int | None = None,
     attempts: int = 6,
     allow_unpublished_twin: bool = False,
+    replace_shared: bool = False,
 ) -> str:
     """Commit this run's window into its backend folder beside the other windows, plus the
     shared root files; regenerate the folder's config.json and the repo README.md from
     every report in the repo.
+
+    A run whose shared file (MediaTek's embedding) differs from the one the folder's other
+    windows were built on is refused; with ``replace_shared`` those windows are withdrawn in
+    the same commit, so the folder never mixes tables, and are republished from this run's
+    revision afterwards, one run each.
 
     Runs publish on their own, possibly at the same moment as another (other windows, other
     backends), so the commit is pinned to the revision the README was rendered from and
@@ -280,13 +287,31 @@ def publish_hf(
         if orphaned:
             dropped = {id(by_path[p]) for p in orphaned if p in by_path}
             reports = [r for r in reports if id(r) not in dropped]
-        require_shared_files_agree(report, [r for r in reports if r is not report])
+        clashes = shared_file_clashes(report, [r for r in reports if r is not report])
+        withdrawn: list[str] = []
+        if clashes and not replace_shared:
+            raise ValueError(
+                "this run's shared files differ from those other published windows were built on: "
+                + "; ".join(why for _, why in clashes)
+                + ". Pass --replace-shared to withdraw those windows in the same commit, then republish "
+                "each from this run's revision."
+            )
+        if clashes:
+            ours = {entry["path"] for entry in report["files"]}
+            gone = {id(other) for other, _ in clashes}
+            reports = [r for r in reports if id(r) not in gone]
+            withdrawn = [path for path, other in by_path.items() if id(other) in gone]
+            for other, _ in clashes:
+                withdrawn += [entry["path"] for entry in other["files"] if entry["path"] not in ours]
+                migrated.pop(f"{folder}/{exporting.report_file(other['window']['context'])}", None)
+            withdrawn = sorted({p for p in withdrawn if p in existing and p not in stale and p not in new_paths})
         folder_reports = [r for r in reports if _folder(r["backend"], r.get("target")) == folder]
         config = json.dumps(manifest.backend_config(folder_reports), indent=2) + "\n"
         license_files = sorted({f for r in reports for f in r["source"].get("license_files", [])})
         readme = manifest.readme(repo_id, reports, list(cfg.hub_tags), license_files)
 
         operations = [CommitOperationDelete(path_in_repo=path) for path in stale if path not in new_paths]
+        operations += [CommitOperationDelete(path_in_repo=path) for path in withdrawn]
         operations += [
             CommitOperationAdd(path_in_repo=k, path_or_fileobj=str(v))
             for k, v in new_paths.items()
@@ -297,6 +322,9 @@ def publish_hf(
         operations += [CommitOperationAdd(path_in_repo=k, path_or_fileobj=str(v)) for k, v in root_files.items()]
         operations.append(CommitOperationAdd(path_in_repo="README.md", path_or_fileobj=readme.encode("utf-8")))
         message = f"{folder} {label}: {report['source']['id']}@{report['source']['sha'][:12]}"
+        if clashes:
+            labels = sorted({naming.window_label(other["window"]["context"]) for other, _ in clashes})
+            message += f"; withdraws {', '.join(labels)}, built on another shared file"
         if orphaned:
             operations += [CommitOperationDelete(path_in_repo=p) for p in orphaned]
             gpu_reports = [r for r in reports if _folder(r["backend"], r.get("target")) == "vulkan"]

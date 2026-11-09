@@ -335,7 +335,8 @@ calling ExecuTorch's own script in compile-only mode:
   no backend.
 - **Output** per chip: the chunk `.pte` files, the fp32 token embedding table the runner
   reads from disk (one per folder, shared by every window: `publish` refuses a run whose table
-  differs from the one the folder's other reports record, as a newer source revision's would),
+  differs from the one the folder's other reports record, as a newer source revision's would,
+  unless `--replace-shared` withdraws those windows in the same commit for republishing),
   and `config.json` with the flags MediaTek's LLM runner (`examples/mediatek/executor_runner`)
   needs. They do not run on `TextLLMRunner`.
 - **Check:** structural; every chunk loads, has its two methods, and delegates to

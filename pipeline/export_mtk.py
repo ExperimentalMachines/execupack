@@ -324,12 +324,17 @@ def modal_shape(window: int) -> tuple[int, int] | None:
     return None
 
 
+def absolute_tool(tool_python: str) -> str:
+    """The tool python as a path that holds from any working directory; a bare command name is
+    left to PATH."""
+    return str(Path(tool_python).resolve()) if os.sep in tool_python else tool_python
+
+
 def script_paths(tool_python: str, weight_dir: Path) -> tuple[str, Path]:
     """The tool python and the weights' config.json as the script needs them: absolute, because
     it runs in the run's own copy of the scripts (private_examples), where a relative --work or
-    tool path would point into that copy. A bare command name is left to PATH."""
-    tool = str(Path(tool_python).resolve()) if os.sep in tool_python else tool_python
-    return tool, (weight_dir / "config.json").resolve()
+    tool path would point into that copy."""
+    return absolute_tool(tool_python), (weight_dir / "config.json").resolve()
 
 
 def private_examples(examples_dir: Path, work_dir: Path) -> Path:
@@ -460,6 +465,11 @@ def run(
     keep_work: bool = False,
     context: int | None = None,
 ) -> dict:
+    # Every subprocess below runs from another directory (pipeline.mtk_corpus from the repo, the
+    # export script from the run's own copy of the scripts), so the caller's paths are made
+    # absolute once, here (codex review of #30).
+    out_dir, work_dir, examples_dir = out_dir.resolve(), work_dir.resolve(), examples_dir.resolve()
+    tool_python = absolute_tool(tool_python)
     cfg = settings.load()
     recipe = cfg.mtk
     if soc not in SOC_PLATFORMS:
