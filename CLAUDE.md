@@ -39,16 +39,20 @@ there and regenerate; never hand-edit the SVGs. `docs/brand/README.md` has the u
 
 - **`watch-hf.yml`** (hourly) → `watch.py`: lists each watched org's newest repos, checks every unseen one (by name
   first with no network, then by config), and runs `gh workflow run` for each backend's export workflow. State is
-  `seen.json` on the orphan **`state` branch**. Dispatch is staged (`watch.STAGES`: XNNPACK for every model, then Vulkan, then QNN, then
-  MediaTek; the next stage starts when the previous has nothing queued or running) and idempotent (a run in flight for
-  the model counts as dispatched); `requeue` puts cancelled dispatches back. The first run only seeds the state; existing models are exported via the
-  `backfill` input. `watch.WORKFLOWS` maps backend → workflow.
+  `seen.json` on the orphan **`state` branch**. Dispatch is staged (`watch.STAGES`: XNNPACK, with Vulkan in the same
+  run, for every model, then QNN, then MediaTek; the next stage starts when the previous has nothing queued or running) and
+  idempotent (a run in flight for the model counts as dispatched); `requeue` puts cancelled dispatches back. The first run
+  only seeds the state; existing models are exported via the `backfill` input. `watch.WORKFLOWS` maps backend →
+  workflow, and `watch.BUILT_WITH` names a backend built in another's run (Vulkan in XNNPACK's).
 - **`solve` job in `export-xnnpack.yml`** (on Modal) → `solve.py`: GPTQ for the int4 codes, once per model because the codes are
   per linear and the window changes only the KV cache and the masks. Calibration is `calibration.py`: committed
   prompts in the model's own chat template, each continued by the fp32 model's own greedy reply. The codes reach every
   window's export as an artifact; `export_with_codes.py` injects them into torchao's tensors before lowering and also
   carries the LFM2 state fix (`lfm2_state.py`), which the solve applies too.
-- **`export-xnnpack.yml`** / **`export-vulkan.yml`** (each window in a Modal Sandbox via `remote.py`) → `export_xnnpack.py` (`backend="xnnpack"|"vulkan"`, same recipe, XNNPACK or Vulkan delegate; Vulkan gets the structural check): `hub.fetch` → `eligibility.evaluate` → `sizing.choose_context` →
+- **`export-xnnpack.yml`** (each window in a Modal Sandbox via `remote.py`) → `export_xnnpack.py` (`backend="xnnpack"`,
+  then in the same Sandbox `backend="vulkan"` from the same codes with the XNNPACK report as `--gate-proxy`, for GPTQ
+  8da4w runs of models Vulkan can take; there is no Vulkan workflow of its own, since one could only solve again or round
+  to nearest; Vulkan gets the structural check): `hub.fetch` → `eligibility.evaluate` → `sizing.choose_context` →
   download → `convert.py` (HF safetensors → ExecuTorch checkpoint layout) → generated `params.json` + `export_llm`
   YAML → subprocess `executorch.extension.llm.export.export_llm` → `smoke.py` (greedy generation through the wheel's
   `TextLLMRunner`, the same C++ runner the app uses) → `export-report-<window>.json` + `config.json`.

@@ -1,4 +1,5 @@
 import dataclasses
+import json
 
 import pytest
 from conftest import make_source
@@ -189,3 +190,47 @@ def test_an_int8_head_is_priced_at_a_byte_a_weight(source):
     assert 0.4 * head < eight - four < 0.5 * head  # (1 - 0.5625) bytes per weight, plus overhead
     rows = sizing.choose_context(arch, (2048,), 5_000_000_000, 500_000_000, None, output_bits=8).table
     assert rows[0]["device_resident_bytes"] == sizing.device_resident_bytes(arch, 2048, 500_000_000, output_bits=8)
+
+
+def matrix(monkeypatch, capsys, model_id, config, *flags):
+    from pipeline import hub
+    from pipeline.__main__ import main
+
+    monkeypatch.setattr(hub, "fetch", lambda m, r: make_source(model_id, config=config))
+    rc = main(["export-matrix", model_id, "--backend", "xnnpack", *flags])
+    return rc, json.loads(capsys.readouterr().out.strip().splitlines()[-1]) if rc == 0 else None
+
+
+def test_the_xnnpack_matrix_marks_the_windows_whose_job_also_builds_the_vulkan_file(monkeypatch, capsys):
+    from conftest import hf_config
+
+    config = hf_config("Qwen/Qwen3-1.7B")
+    rc, plain = matrix(monkeypatch, capsys, "Qwen/Qwen3-1.7B", config)
+    rc, both = matrix(monkeypatch, capsys, "Qwen/Qwen3-1.7B", config, "--with-vulkan")
+    assert rc == 0 and [e["context"] for e in both] == [e["context"] for e in plain]
+    assert all(e["vulkan"] for e in both)
+    # The Vulkan file gets a Sandbox of its own: the XNNPACK one keeps its size.
+    for p, b in zip(plain, both, strict=True):
+        assert b["memory_mib"] == p["memory_mib"] and b["vulkan_memory_mib"] > 0
+    assert "vulkan" not in plain[0]
+
+
+def test_a_model_vulkan_cannot_take_gets_no_vulkan_file(monkeypatch, capsys):
+    from conftest import load_json
+
+    config = load_json("lfm2.5-350m.config.json")  # LFM2.5: no Vulkan path (its hybrid segfaults there)
+    rc, plain = matrix(monkeypatch, capsys, "LiquidAI/LFM2.5-350M", config)
+    rc, both = matrix(monkeypatch, capsys, "LiquidAI/LFM2.5-350M", config, "--with-vulkan")
+    assert rc == 0 and both and not any(e["vulkan"] for e in both)
+    assert not any("vulkan_memory_mib" in e for e in both)
+    assert [e["memory_mib"] for e in both] == [e["memory_mib"] for e in plain]
+
+
+def test_with_vulkan_belongs_to_the_xnnpack_matrix(monkeypatch, capsys):
+    from conftest import hf_config
+
+    from pipeline import hub
+    from pipeline.__main__ import main
+
+    monkeypatch.setattr(hub, "fetch", lambda m, r: make_source("Qwen/Qwen3-1.7B", config=hf_config("Qwen/Qwen3-1.7B")))
+    assert main(["export-matrix", "Qwen/Qwen3-1.7B", "--backend", "vulkan", "--with-vulkan"]) == 2

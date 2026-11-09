@@ -81,16 +81,17 @@ def test_new_models_are_checked_once_and_dispatched(tmp_path):
     entry = models["Qwen/Qwen3-1.7B-Instruct-2609"]
     assert entry["status"] == "pending"  # its MediaTek stage is still to come
     assert entry["backends"]["xnnpack"]["status"] == "dispatched"
+    # Vulkan is built in the XNNPACK run, from the same codes: it goes out with it.
+    assert entry["backends"]["vulkan"]["status"] == "dispatched"
+    assert entry["backends"]["vulkan"]["built_with"] == "xnnpack"
     assert entry["backends"]["qnn"]["status"] == "skipped"
     assert entry["backends"]["mtk"]["status"] == "pending"
     # Seeded models are not re-checked.
     assert "Qwen/Qwen3-0.6B" not in summary["new"]
-    # The next passes find nothing new; each idle stage hands over: Vulkan, then MediaTek.
+    # The next pass finds nothing new; the idle XNNPACK stage hands over to MediaTek.
     hub.dispatched.clear()
     summary = run(tmp_path, hub)
-    assert summary["new"] == [] and [d[0] for d in hub.dispatched] == ["export-vulkan.yml"]
-    summary = run(tmp_path, hub)
-    assert [d[0] for d in hub.dispatched] == ["export-vulkan.yml", "export-mtk.yml"]
+    assert summary["new"] == [] and [d[0] for d in hub.dispatched] == ["export-mtk.yml"]
     assert summary["state"]["models"]["Qwen/Qwen3-1.7B-Instruct-2609"]["status"] == "dispatched"
 
 
@@ -137,12 +138,9 @@ def test_backfill_exports_a_seeded_model(tmp_path):
     summary = run(tmp_path, hub, backfill=("Qwen/Qwen3-1.7B",))
     assert summary["backfilled"] == ["Qwen/Qwen3-1.7B"]
     # Qwen3-1.7B is also in ExecuTorch's Qualcomm registry, but stages go one backend at a
-    # time: XNNPACK now, Vulkan and QNN on the passes after the previous stage is idle.
+    # time: XNNPACK (and Vulkan with it) now, QNN on the pass after that stage is idle.
     assert hub.dispatched == [("export-xnnpack.yml", "Qwen/Qwen3-1.7B", "sha-Qwen/Qwen3-1.7B")]
     assert summary["stage"] == "xnnpack"
-    summary = run(tmp_path, hub)
-    assert hub.dispatched[-1] == ("export-vulkan.yml", "Qwen/Qwen3-1.7B", "sha-Qwen/Qwen3-1.7B")
-    assert summary["stage"] == "vulkan"
     summary = run(tmp_path, hub)
     assert hub.dispatched[-1] == ("export-qnn.yml", "Qwen/Qwen3-1.7B", "sha-Qwen/Qwen3-1.7B")
     assert summary["stage"] == "qnn"
@@ -217,11 +215,7 @@ def test_stages_wait_for_the_previous_backend_to_finish(tmp_path):
     hub.dispatched.clear()
     summary = run(tmp_path, hub, in_flight=lambda wf: wf == "export-xnnpack.yml")
     assert hub.dispatched == [] and summary["stage"] == "xnnpack"
-    # XNNPACK idle: Vulkan for every model, then (next pass) QNN for the two in the registry.
-    summary = run(tmp_path, hub)
-    assert {d[0] for d in hub.dispatched} == {"export-vulkan.yml"} and len(hub.dispatched) == 3
-    assert summary["stage"] == "vulkan"
-    hub.dispatched.clear()
+    # XNNPACK idle (Vulkan was built in those runs): QNN for the two in the registry.
     summary = run(tmp_path, hub)
     assert sorted(d[1] for d in hub.dispatched) == ["Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B"]
     assert {d[0] for d in hub.dispatched} == {"export-qnn.yml"} and summary["stage"] == "qnn"
@@ -268,3 +262,65 @@ def test_state_version_is_checked(tmp_path):
     (tmp_path / "seen.json").write_text(json.dumps({"version": 99, "models": {}}))
     with pytest.raises(ValueError, match="state version"):
         watch.load_state(tmp_path / "seen.json")
+
+
+def test_vulkan_is_never_dispatched_on_its_own_and_comes_back_with_a_requeue(tmp_path):
+    # Vulkan files are built in the XNNPACK run from the same solved codes; a workflow of its
+    # own could only solve again or round to nearest.
+    assert "vulkan" not in watch.WORKFLOWS and "vulkan" not in watch.STAGES
+    hub = FakeHub({"Qwen": []})
+    run(tmp_path, hub)
+    hub.listings["Qwen"] = ["Qwen/Qwen3-1.7B"]
+    run(tmp_path, hub)
+    assert hub.dispatched == [("export-xnnpack.yml", "Qwen/Qwen3-1.7B", "sha-Qwen/Qwen3-1.7B")]
+    # Cancelled runs go back to the queue together, and out again together.
+    hub.dispatched.clear()
+    summary = run(tmp_path, hub, requeue=True)
+    assert hub.dispatched == [("export-xnnpack.yml", "Qwen/Qwen3-1.7B", "sha-Qwen/Qwen3-1.7B")]
+    vulkan = summary["state"]["models"]["Qwen/Qwen3-1.7B"]["backends"]["vulkan"]
+    assert vulkan["status"] == "dispatched" and vulkan["built_with"] == "xnnpack"
+
+
+def test_a_vulkan_stage_left_pending_by_the_old_staging_is_skipped_with_the_way_to_build_it(tmp_path):
+    hub = FakeHub({"Qwen": []})
+    run(tmp_path, hub)
+    hub.listings["Qwen"] = ["Qwen/Qwen3-1.7B"]
+    run(tmp_path, hub)
+    # A state written before 2026-11-09: XNNPACK out, Vulkan waiting for a stage that is gone.
+    state = json.loads((tmp_path / "seen.json").read_text())
+    state["models"]["Qwen/Qwen3-1.7B"]["backends"]["vulkan"] = {"status": "pending"}
+    (tmp_path / "seen.json").write_text(json.dumps(state))
+    hub.dispatched.clear()
+    summary = run(tmp_path, hub)
+    vulkan = summary["state"]["models"]["Qwen/Qwen3-1.7B"]["backends"]["vulkan"]
+    assert vulkan["status"] == "skipped" and "backfill" in vulkan["reason"]
+    assert all(d[0] != "export-vulkan.yml" for d in hub.dispatched)
+
+
+def test_vulkan_is_skipped_when_the_xnnpack_run_that_builds_it_is_not_made(monkeypatch):
+    class Verdict:
+        reasons, family = [], "qwen3"
+        backends = {"xnnpack": "not here", "vulkan": None, "qnn": None, "mtk": None}
+
+    monkeypatch.setattr(watch.eligibility, "evaluate", lambda *a, **k: Verdict())
+    entry = {"first_seen": "x"}
+    source = make_source("Qwen/Qwen3-1.7B", config=QWEN3)
+    watch._evaluate("Qwen/Qwen3-1.7B", "main", CFG, lambda m, r: source, entry)
+    assert entry["backends"]["vulkan"]["status"] == "skipped"
+    assert "xnnpack run" in entry["backends"]["vulkan"]["reason"]
+
+
+def test_an_entry_from_before_vulkan_existed_records_it_when_its_xnnpack_run_goes_out_again(tmp_path):
+    # The real shape on the state branch: a dispatched model whose backends have no vulkan line.
+    hub = FakeHub({"Qwen": []})
+    run(tmp_path, hub)
+    hub.listings["Qwen"] = ["Qwen/Qwen3-1.7B"]
+    run(tmp_path, hub)
+    state = json.loads((tmp_path / "seen.json").read_text())
+    del state["models"]["Qwen/Qwen3-1.7B"]["backends"]["vulkan"]
+    (tmp_path / "seen.json").write_text(json.dumps(state))
+    hub.dispatched.clear()
+    summary = run(tmp_path, hub, requeue=True)
+    assert hub.dispatched == [("export-xnnpack.yml", "Qwen/Qwen3-1.7B", "sha-Qwen/Qwen3-1.7B")]
+    vulkan = summary["state"]["models"]["Qwen/Qwen3-1.7B"]["backends"]["vulkan"]
+    assert vulkan["status"] == "dispatched" and vulkan["built_with"] == "xnnpack" and "predates" in vulkan["note"]

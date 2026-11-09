@@ -33,12 +33,17 @@ STATE_VERSION = 1
 # joins in phase 4.
 WORKFLOWS = {
     "xnnpack": "export-xnnpack.yml",
-    "vulkan": "export-vulkan.yml",
     "qnn": "export-qnn.yml",
     "mtk": "export-mtk.yml",
 }
-# Dispatch order: the CPU exports of every model first, then GPU, then each NPU in turn.
-STAGES = ("xnnpack", "vulkan", "qnn", "mtk")
+# Backends with no workflow of their own, built in another backend's run. Vulkan files come
+# out of the XNNPACK workflow's window jobs (2026-11-09): the same solved codes, gated through
+# the XNNPACK file of the same window, since the host has no Vulkan runtime to gate them. A
+# workflow of its own could only solve again or round to nearest, which every published Vulkan
+# file was until then.
+BUILT_WITH = {"vulkan": "xnnpack"}
+# Dispatch order: the CPU (and with it GPU) exports of every model first, then each NPU in turn.
+STAGES = ("xnnpack", "qnn", "mtk")
 # A model whose metadata could not be read is retried this many runs before it is skipped.
 MAX_ATTEMPTS = 5
 
@@ -169,10 +174,17 @@ def _evaluate(
     entry["reasons"] = verdict.reasons
     entry["backends"] = {}
     for backend, why in verdict.backends.items():
-        if not verdict.reasons and why is None and backend in WORKFLOWS:
+        if not verdict.reasons and why is None and (backend in WORKFLOWS or backend in BUILT_WITH):
             entry["backends"][backend] = {"status": "pending"}
         else:
             entry["backends"][backend] = {"status": "skipped", "reason": why or "no export workflow yet"}
+    for backend, host in BUILT_WITH.items():
+        info, host_info = entry["backends"].get(backend), entry["backends"].get(host)
+        if info and info["status"] == "pending" and (host_info or {}).get("status") != "pending":
+            entry["backends"][backend] = {
+                "status": "skipped",
+                "reason": f"built in the {host} run, which this model does not get",
+            }
     pending = any(b["status"] == "pending" for b in entry["backends"].values())
     entry["status"] = "pending" if pending else "skipped"
     entry.pop("attempts", None)
@@ -266,9 +278,36 @@ def run(
                     continue
                 info.update(status="dispatched", at=stamp)
                 info.pop("last_error", None)
+                # The backends this run builds too (Vulkan with XNNPACK) go out with it. An entry
+                # recorded before the backend existed has no line for it at all (26 such models on
+                # the state branch, 2026-11-09): the run's targets job decides whether the model
+                # can take it, and the state says it went out with the run.
+                for built, host in BUILT_WITH.items():
+                    if host != backend:
+                        continue
+                    other = entry["backends"].get(built)
+                    if other is None:
+                        entry["backends"][built] = {
+                            "status": "dispatched",
+                            "at": stamp,
+                            "built_with": backend,
+                            "note": "entry predates this backend; the run decides whether the model can take it",
+                        }
+                    elif other["status"] == "pending":
+                        other.update(status="dispatched", at=stamp, built_with=backend)
             summary["dispatched"].append(f"{model_id} -> {backend}")
             budget -= 1
         break  # later stages wait for this one
+    # A model whose host run went out before its backend was built there (a Vulkan stage
+    # recorded under the old staging) would wait forever: say what would build it instead.
+    for entry in models.values():
+        for built, host in BUILT_WITH.items():
+            info, host_info = entry.get("backends", {}).get(built), entry.get("backends", {}).get(host)
+            if info and info["status"] == "pending" and (host_info or {}).get("status") not in (None, "pending"):
+                info.update(
+                    status="skipped",
+                    reason=f"its {host} run predates {built} being built there; backfill the model to build it",
+                )
     for entry in models.values():
         if entry.get("status") == "pending" and all(
             i["status"] != "pending" for i in entry.get("backends", {}).values()

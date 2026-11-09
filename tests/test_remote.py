@@ -70,7 +70,7 @@ def test_the_image_carries_what_the_pipeline_reads():
     assert {"pipeline", "config", "third_party", "requirements"} <= set(remote.REPO_DIRS)
 
 
-@pytest.mark.parametrize("workflow", ["export-xnnpack.yml", "export-vulkan.yml"])
+@pytest.mark.parametrize("workflow", ["export-xnnpack.yml"])
 def test_the_workflow_sends_each_window_to_modal_with_its_own_memory(workflow):
     text = (settings.ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
     assert "python -m pipeline modal-run --memory-mib" in text
@@ -184,3 +184,35 @@ def test_the_container_peak_is_read_from_its_cgroup(tmp_path):
     sampler.sample()
     assert sampler.result()["peak_cgroup_bytes"] == 3221225472
     assert MemorySampler(meminfo=tmp_path / "missing", cgroup=()).result()["peak_cgroup_bytes"] is None
+
+
+def test_vulkan_files_are_built_only_from_solved_codes_in_the_xnnpack_window_jobs():
+    workflows = settings.ROOT / ".github/workflows"
+    # No workflow of its own: one could only solve again or round to nearest.
+    assert not (workflows / "export-vulkan.yml").exists()
+    text = (workflows / "export-xnnpack.yml").read_text(encoding="utf-8")
+    # Asked for only on a run that solves 8da4w codes, never a rounded or fp32 one.
+    lines = text.splitlines()
+    guard = lines[next(i for i, line in enumerate(lines) if 'WITH_VULKAN="--with-vulkan"' in line) - 1]
+    assert '"$VULKAN" = "true"' in guard and '"$GPTQ" = "true"' in guard and '"$QMODE" = "8da4w"' in guard
+    assert '--backend xnnpack --contexts "$CONTEXTS" $WITH_VULKAN' in text
+    # Every Vulkan export in every workflow carries the solve's codes and its XNNPACK twin.
+    for wf in workflows.glob("*.yml"):
+        body = wf.read_text(encoding="utf-8")
+        for chunk in body.split("python -m pipeline export-vulkan")[1:]:
+            command = " ".join(chunk.split("\n")[:2])
+            assert '--codes "$IN/codes.pt"' in command and "--gate-proxy" in command, wf.name
+    # The CPU file is published before the GPU Sandbox starts, in a Sandbox of its own, so a
+    # GPU failure or timeout never costs it; the GPU file publishes only once its twin is out.
+    publish_cpu = text.index('publish-hf "$WORK_DIR/out" --backend xnnpack')
+    gpu_sandbox = text.index('--memory-mib "$VULKAN_MEMORY_MIB"')
+    publish_gpu = text.index('publish-hf "$WORK_DIR/vulkan-out" --backend vulkan')
+    assert publish_cpu < gpu_sandbox < publish_gpu
+    gpu_step = text[text.rindex("- name:", 0, publish_gpu) : publish_gpu]
+    assert "steps.publish_xnnpack.outcome == 'success'" in gpu_step and "env.VULKAN_BUILT == '1'" in gpu_step
+    assert "VULKAN_FAILED=1" in text and "env.VULKAN_FAILED == '1'" in text
+    # Its GitHub release, likewise, only beside its twin's and after its own Hub publish.
+    release_gpu = text.index('publish-release "$WORK_DIR/vulkan-out" --backend vulkan')
+    release_step = text[text.rindex("- name:", 0, release_gpu) : release_gpu]
+    assert "steps.release_xnnpack.outcome == 'success'" in release_step
+    assert "(!inputs.publish_hf || steps.publish_vulkan.outcome == 'success')" in release_step
