@@ -330,6 +330,16 @@ def absolute_tool(tool_python: str) -> str:
     return str(Path(tool_python).resolve()) if os.sep in tool_python else tool_python
 
 
+def absolute_inputs(
+    out_dir: Path, work_dir: Path, examples_dir: Path, tool_python: str
+) -> tuple[Path, Path, Path, str]:
+    """run()'s paths, made absolute before anything else: every subprocess it starts runs from
+    another directory (pipeline.mtk_corpus from the repo, the export script from the run's own
+    copy of the scripts), where a caller's relative path means something else (codex review of
+    #30)."""
+    return out_dir.resolve(), work_dir.resolve(), examples_dir.resolve(), absolute_tool(tool_python)
+
+
 def script_paths(tool_python: str, weight_dir: Path) -> tuple[str, Path]:
     """The tool python and the weights' config.json as the script needs them: absolute, because
     it runs in the run's own copy of the scripts (private_examples), where a relative --work or
@@ -465,11 +475,7 @@ def run(
     keep_work: bool = False,
     context: int | None = None,
 ) -> dict:
-    # Every subprocess below runs from another directory (pipeline.mtk_corpus from the repo, the
-    # export script from the run's own copy of the scripts), so the caller's paths are made
-    # absolute once, here (codex review of #30).
-    out_dir, work_dir, examples_dir = out_dir.resolve(), work_dir.resolve(), examples_dir.resolve()
-    tool_python = absolute_tool(tool_python)
+    out_dir, work_dir, examples_dir, tool_python = absolute_inputs(out_dir, work_dir, examples_dir, tool_python)
     cfg = settings.load()
     recipe = cfg.mtk
     if soc not in SOC_PLATFORMS:

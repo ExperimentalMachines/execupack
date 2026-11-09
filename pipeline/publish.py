@@ -297,14 +297,28 @@ def publish_hf(
                 "each from this run's revision."
             )
         if clashes:
-            ours = {entry["path"] for entry in report["files"]}
             gone = {id(other) for other, _ in clashes}
             reports = [r for r in reports if id(r) not in gone]
+            # Only each withdrawn window's own files go: those in this folder that carry its window
+            # in their name, and its report. A file any kept report (this run's included) still
+            # lists, an unlabelled shared file, or a path in another folder is never touched, so a
+            # withdrawal cannot take a file a window that stays depends on (codex review of #30,
+            # round three).
+            kept = {entry["path"] for r in reports for entry in r.get("files", [])}
             withdrawn = [path for path, other in by_path.items() if id(other) in gone]
             for other, _ in clashes:
-                withdrawn += [entry["path"] for entry in other["files"] if entry["path"] not in ours]
+                own = naming.window_label(other["window"]["context"])
+                withdrawn += [
+                    entry["path"]
+                    for entry in other["files"]
+                    if entry["path"].startswith(f"{folder}/")
+                    and "/" not in entry["path"][len(folder) + 1 :]
+                    and window_of(entry["path"].rsplit("/", 1)[-1]) == own
+                ]
                 migrated.pop(f"{folder}/{exporting.report_file(other['window']['context'])}", None)
-            withdrawn = sorted({p for p in withdrawn if p in existing and p not in stale and p not in new_paths})
+            withdrawn = sorted(
+                {p for p in withdrawn if p in existing and p not in stale and p not in new_paths and p not in kept}
+            )
         folder_reports = [r for r in reports if _folder(r["backend"], r.get("target")) == folder]
         config = json.dumps(manifest.backend_config(folder_reports), indent=2) + "\n"
         license_files = sorted({f for r in reports for f in r["source"].get("license_files", [])})

@@ -627,3 +627,67 @@ def test_replace_shared_withdraws_the_windows_built_on_the_old_table_in_the_same
     config = json.loads(added["mtk/mt6991/config.json"].path_or_fileobj)
     assert [v["context"] for v in config["variants"]] == [16384]
     assert "withdraws 8k" in message
+
+
+def test_replace_shared_takes_only_the_withdrawn_windows_own_files(tmp_path, monkeypatch):
+    # The withdrawal must not take a file a kept window still lists, an unlabelled shared file, or
+    # a path in another folder; an old pre-matrix report on the old table goes with its window
+    # (codex review of #30, round three).
+    new_emb, old_emb = hashlib.sha256(b"newer weights").hexdigest(), hashlib.sha256(b"emb").hexdigest()
+    aux = {"path": "mtk/mt6991/aux-shared.bin", "bytes": 3, "sha256": "a" * 64}
+    out = tmp_path / "out"
+    (out / "mtk" / "mt6991").mkdir(parents=True)
+    (out / "tokenizer.json").write_text("{}")
+    new = mtk_window(16384, new_emb)
+    (out / "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-16k-chunk1of1.pte").write_bytes(b"pte")
+    (out / "mtk/mt6991/Qwen3-1.7B-neuropilot-embedding-fp32.bin").write_bytes(b"newer weights")
+    (out / "mtk/mt6991/export-report-16k.json").write_text(json.dumps(new))
+    (out / "mtk/mt6991/config.json").write_text(json.dumps(manifest.backend_config(new)))
+    clashing = mtk_window(8192, old_emb)
+    clashing["files"] += [aux, {"path": "xnnpack/Qwen3-1.7B-8da4w-8k.pte", "bytes": 3, "sha256": "b" * 64}]
+    kept = mtk_window(4096, new_emb)  # already republished from the new revision
+    kept["files"].append(aux)
+    pre_matrix = mtk_window(2048, old_emb)
+    remote = {
+        "README.md": None,
+        "mtk/mt6991/Qwen3-1.7B-neuropilot-embedding-fp32.bin": None,
+        "mtk/mt6991/aux-shared.bin": None,
+        "mtk/mt6991/config.json": None,
+        "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-8k-chunk1of1.pte": None,
+        "mtk/mt6991/export-report-8k.json": clashing,
+        "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-4k-chunk1of1.pte": None,
+        "mtk/mt6991/export-report-4k.json": kept,
+        "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-2k-chunk1of1.pte": None,
+        "mtk/mt6991/export-report.json": pre_matrix,
+        "xnnpack/Qwen3-1.7B-8da4w-8k.pte": None,
+    }
+    hub = FakeHub(remote)
+    monkeypatch.setattr(publish.hub, "api", lambda: hub)
+
+    def fake_download(repo_id, path, revision, token):
+        local = tmp_path / "dl" / path
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(json.dumps(remote[path]))
+        return str(local)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    with pytest.raises(ValueError, match="Pass --replace-shared"):
+        publish.publish_hf(out, "mtk", "mt6991")
+    publish.publish_hf(out, "mtk", "mt6991", replace_shared=True)
+    [(operations, message, _)] = hub.commits
+    deleted = sorted(op.path_in_repo for op in operations if type(op).__name__ == "CommitOperationDelete")
+    added = {op.path_in_repo: op for op in operations if type(op).__name__ == "CommitOperationAdd"}
+    assert deleted == [
+        "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-2k-chunk1of1.pte",
+        "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-8k-chunk1of1.pte",
+        "mtk/mt6991/export-report-8k.json",
+        "mtk/mt6991/export-report.json",  # the pre-matrix report, not migrated to a 2k name
+    ]
+    assert "mtk/mt6991/export-report-2k.json" not in added
+    config = json.loads(added["mtk/mt6991/config.json"].path_or_fileobj)
+    assert [v["context"] for v in config["variants"]] == [4096, 16384]
+    readme = added["README.md"].path_or_fileobj.decode()
+    assert "at 4k to 16k" in readme and "-8k-chunk" not in readme and "-2k-chunk" not in readme
+    assert "withdraws 2k, 8k" in message

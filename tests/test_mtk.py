@@ -643,3 +643,29 @@ def test_the_script_gets_absolute_paths_though_it_runs_in_the_runs_own_copy(tmp_
     assert tool == str(tmp_path / "venv/bin/python") and config == tmp_path / "work/weights/m/config.json"
     assert export_mtk.script_paths("python3", Path("w"))[0] == "python3"  # found on PATH, left alone
     assert export_mtk.absolute_tool("venv/bin/python") == str(tmp_path / "venv/bin/python")
+
+
+def test_run_makes_its_paths_absolute_before_anything_else(tmp_path, monkeypatch):
+    # pipeline.mtk_corpus runs from the repo before the script's paths were resolved, so a
+    # relative --work broke LFM2's streaming calibration (codex review of #30, round two).
+    monkeypatch.chdir(tmp_path)
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    def spy(*args):
+        seen.append(args)
+        raise Stop
+
+    original = export_mtk.absolute_inputs
+    monkeypatch.setattr(export_mtk, "absolute_inputs", spy)
+    with pytest.raises(Stop):
+        export_mtk.run("Qwen/Qwen3-0.6B", "main", "MT6991", Path("out"), Path("work"), "venv/bin/python", Path("ex"))
+    assert seen == [(Path("out"), Path("work"), Path("ex"), "venv/bin/python")]
+    assert original(Path("out"), Path("work"), Path("ex"), "venv/bin/python") == (
+        tmp_path / "out",
+        tmp_path / "work",
+        tmp_path / "ex",
+        str(tmp_path / "venv/bin/python"),
+    )
