@@ -84,6 +84,27 @@ def require_vouched(report: dict, paths: list[str]) -> None:
         raise ValueError(f"{unvouched} would be uploaded but are not in the report; nothing vouches for them")
 
 
+def require_shared_files_agree(report: dict, retained: list[dict]) -> None:
+    """A file this run uploads that other windows' reports also list (MediaTek's embedding
+    table, one per folder) is the same bytes they describe: replacing it from another source
+    revision would leave those windows' chunks running on weights their reports never
+    measured, under digests that no longer match (codex review of #30)."""
+    ours = {entry["path"]: entry.get("sha256") for entry in report["files"]}
+    clashes = sorted(
+        f"{entry['path']} (the {naming.window_label(other['window']['context'])} window's report has "
+        f"{str(entry.get('sha256'))[:12]}, this run's is {str(ours[entry['path']])[:12]})"
+        for other in retained
+        for entry in other.get("files", [])
+        if entry["path"] in ours and entry.get("sha256") != ours[entry["path"]]
+    )
+    if clashes:
+        raise ValueError(
+            "this run would replace files other published windows depend on: "
+            + "; ".join(clashes)
+            + ". Re-export those windows from the same revision and publish them together."
+        )
+
+
 def require_publishable(report: dict) -> None:
     """Refuse a report that has not passed every check its recipe calls for.
 
@@ -259,6 +280,7 @@ def publish_hf(
         if orphaned:
             dropped = {id(by_path[p]) for p in orphaned if p in by_path}
             reports = [r for r in reports if id(r) not in dropped]
+        require_shared_files_agree(report, [r for r in reports if r is not report])
         folder_reports = [r for r in reports if _folder(r["backend"], r.get("target")) == folder]
         config = json.dumps(manifest.backend_config(folder_reports), indent=2) + "\n"
         license_files = sorted({f for r in reports for f in r["source"].get("license_files", [])})

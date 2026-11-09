@@ -1,11 +1,12 @@
 import dataclasses
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 from conftest import MTK_FLEET, TOTAL_PARAMS, hf_config, load_json
 
-from pipeline import export_mtk, families, manifest, naming, publish, settings
+from pipeline import eligibility, export_mtk, families, manifest, naming, publish, settings
 
 CFG = settings.load()
 # The runner choice is tested on a three-size fleet (conftest); the configured tier is one.
@@ -556,8 +557,12 @@ def test_an_npu_only_card_promises_no_generic_runtime_and_a_portable_one_does():
     opening = manifest.readme("experimentalmachines/gemma-3-1b-it-ExecuTorch", gemma3, [], [])
     assert "for phone NPUs only" in opening and "or any ExecuTorch" not in opening
     assert "does not read `config.json`" in opening  # MediaTek's runner takes flags
+    # With CPU or GPU files beside the NPU ones, only those are promised to any runtime.
     mixed = [*gemma3, {**gemma3[0], "backend": "xnnpack"}]
-    assert "or any ExecuTorch" in manifest.readme("experimentalmachines/gemma-3-1b-it-ExecuTorch", mixed, [], [])
+    text = manifest.readme("experimentalmachines/gemma-3-1b-it-ExecuTorch", mixed, [], [])
+    assert "The CPU (XNNPACK) and GPU (Vulkan) files also run on any ExecuTorch" in text
+    assert "the NPU files need the runner their section below names" in text
+    assert "Android app or any ExecuTorch" not in text
 
 
 def test_gemma2_past_its_sliding_window_says_what_it_computes_differently():
@@ -613,3 +618,27 @@ def test_gemma3_is_refused_on_scripts_without_the_two_table_patch(tmp_path, monk
     monkeypatch.setattr(export_mtk.hub, "fetch", lambda model_id, revision: source(model_id))
     with pytest.raises(export_mtk.ExportError, match="modeling_gemma.py lacks the patch.*mediatek-gemma.patch"):
         export_mtk.run("google/gemma-3-1b-it", "main", "MT6991", tmp_path, tmp_path, "p", examples)
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"layer_types": ["sliding_attention"] * 26, "sliding_window_pattern": None}, "no full_attention"),
+        ({"layer_types": ["chunked_attention"] * 26, "sliding_window_pattern": None}, "no MediaTek layer"),
+        ({"sliding_window": None}, "no sliding_window"),
+    ],
+)
+def test_a_gemma3_config_mediatek_cannot_translate_is_a_verdict_not_a_crash(change, reason, source):
+    # Anything but UnsupportedModel would end the watcher's whole pass (codex review of #30).
+    config = {**hf_config("google/gemma-3-1b-it"), **change}
+    with pytest.raises(families.UnsupportedModel, match=reason):
+        families.mtk_model_config(config)
+    verdict = eligibility.evaluate(source("google/gemma-3-1b-it", config), CFG)
+    assert reason in verdict.backends["mtk"]
+
+
+def test_the_script_gets_absolute_paths_though_it_runs_in_the_runs_own_copy(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    tool, config = export_mtk.script_paths("venv/bin/python", Path("work/weights/m"))
+    assert tool == str(tmp_path / "venv/bin/python") and config == tmp_path / "work/weights/m/config.json"
+    assert export_mtk.script_paths("python3", Path("w"))[0] == "python3"  # found on PATH, left alone

@@ -334,8 +334,10 @@ calling ExecuTorch's own script in compile-only mode:
   count, plain, fp16 or with int8 weights folded, so `mtk_plan` refuses it and Gemma 2 has
   no backend.
 - **Output** per chip: the chunk `.pte` files, the fp32 token embedding table the runner
-  reads from disk, and `config.json` with the flags MediaTek's LLM runner
-  (`examples/mediatek/executor_runner`) needs. They do not run on `TextLLMRunner`.
+  reads from disk (one per folder, shared by every window: `publish` refuses a run whose table
+  differs from the one the folder's other reports record, as a newer source revision's would),
+  and `config.json` with the flags MediaTek's LLM runner (`examples/mediatek/executor_runner`)
+  needs. They do not run on `TextLLMRunner`.
 - **Check:** structural; every chunk loads, has its two methods, and delegates to
   `NeuropilotBackend`.
 - **16k built with one attention layer per chunk** (2026-10-04, finding 39). LFM2.5-1.2B-Instruct

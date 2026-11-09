@@ -157,20 +157,27 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         else "revisions " + ", ".join(f"`{sha[:12]}`" for sha in revisions) + " (see each variant's `source_revision`)"
     )
     # Only an XNNPACK or Vulkan file runs on any ExecuTorch runtime; an NPU file needs the runner
-    # its section names (codex review: a MediaTek-only Gemma 3 repo was promised to any runtime).
+    # its section names (codex review: a MediaTek-only Gemma 3 repo was promised to any runtime,
+    # and a repo with both kinds promised it for the NPU files too).
     portable = any(r["backend"] in ("xnnpack", "vulkan") for r in reports)
+    npu = any(r["backend"] not in ("xnnpack", "vulkan") for r in reports)
+    runtime = f"ExecuTorch {reports[0]['toolchain']['executorch']} runtime"
+    app = "[openweights](https://github.com/alpharomercoma/openweights) Android app"
+    if portable and npu:
+        use = (
+            f"for on-device inference with the {app}. The CPU (XNNPACK) and GPU (Vulkan) files also run on "
+            f"any {runtime}; the NPU files need the runner their section below names."
+        )
+    elif portable:
+        use = f"for on-device inference with the {app} or any {runtime}."
+    else:
+        use = "for phone NPUs only: each file needs the runner its section below names, not a generic " + (
+            "ExecuTorch runtime."
+        )
     out += [
         f"# {naming.source_name(source['id'])} for ExecuTorch",
         "",
-        f"ExecuTorch exports of [{source['id']}]({upstream}) ({revision_text}) "
-        + (
-            "for on-device inference with the "
-            "[openweights](https://github.com/alpharomercoma/openweights) Android app or any "
-            f"ExecuTorch {reports[0]['toolchain']['executorch']} runtime."
-            if portable
-            else "for phone NPUs only: each file needs the runner its section below names, not a "
-            "generic ExecuTorch runtime."
-        ),
+        f"ExecuTorch exports of [{source['id']}]({upstream}) ({revision_text}) " + use,
         "",
     ]
     if source.get("variant") == "base":

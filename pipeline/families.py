@@ -203,10 +203,19 @@ def mtk_model_config(config: dict) -> dict:
         return config
     out = dict(c)
     out["model_type"] = "gemma3"
+    # Every shape this cannot translate is an UnsupportedModel, which eligibility turns into a
+    # verdict; anything else (StopIteration, KeyError) would end the watcher's whole pass
+    # (codex review of #30).
+    _require(bool(c.get("sliding_window")), "Gemma 3 config names no sliding_window")
     period = int(c.get("sliding_window_pattern") or 0)
     layer_types = c.get("layer_types")
     if layer_types:
-        period = period or next(i + 1 for i, t in enumerate(layer_types) if t == "full_attention")
+        unknown = sorted({t for t in layer_types if t not in _GEMMA3_MTK_LAYER})
+        _require(not unknown, f"Gemma 3 layer_types {unknown} have no MediaTek layer")
+        if not period:
+            first_global = next((i + 1 for i, t in enumerate(layer_types) if t == "full_attention"), None)
+            _require(first_global is not None, "Gemma 3 layer_types name no full_attention layer")
+            period = first_global
         pattern = [_GEMMA3_MTK_LAYER[t] for t in layer_types[:period]]
         if any(_GEMMA3_MTK_LAYER[t] != pattern[i % period] for i, t in enumerate(layer_types)):
             raise UnsupportedModel("Gemma 3 layer_types do not repeat with one period")

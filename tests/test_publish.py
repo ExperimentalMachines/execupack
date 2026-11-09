@@ -547,3 +547,57 @@ def test_an_unreadable_gpu_release_is_an_error_not_an_absent_one(monkeypatch):
     monkeypatch.setattr(publish.subprocess, "run", FakeGh("api-error").run)
     with pytest.raises(RuntimeError, match="gh release view"):
         publish.withdraw_orphaned_gpu_release(report(4096))
+
+
+def mtk_window(context, embedding_sha):
+    r = report(context, backend="mtk", target="mt6991")
+    label = f"{context // 1024}k"
+    r["files"] = [
+        {
+            "path": f"mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-{label}-chunk1of1.pte",
+            "bytes": 3,
+            "sha256": r["files"][0]["sha256"],
+        },
+        {"path": "mtk/mt6991/Qwen3-1.7B-neuropilot-embedding-fp32.bin", "bytes": 3, "sha256": embedding_sha},
+    ]
+    return r
+
+
+def test_a_shared_file_must_match_what_the_other_windows_reports_describe():
+    same, other = hashlib.sha256(b"emb").hexdigest(), hashlib.sha256(b"newer weights").hexdigest()
+    publish.require_shared_files_agree(mtk_window(16384, same), [mtk_window(8192, same)])  # a rerun from one revision
+    with pytest.raises(ValueError, match=r"embedding-fp32.bin \(the 8k window's report has"):
+        publish.require_shared_files_agree(mtk_window(16384, other), [mtk_window(8192, same)])
+
+
+def test_publish_hf_refuses_to_swap_the_embedding_other_mediatek_windows_run_on(tmp_path, monkeypatch):
+    # Publishing a 16k export built from a newer revision would have replaced the folder's one
+    # embedding table under the published 8k chunks (codex review of #30).
+    out = tmp_path / "out"
+    (out / "mtk" / "mt6991").mkdir(parents=True)
+    (out / "tokenizer.json").write_text("{}")
+    new = mtk_window(16384, hashlib.sha256(b"newer weights").hexdigest())
+    (out / "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-16k-chunk1of1.pte").write_bytes(b"pte")
+    (out / "mtk/mt6991/Qwen3-1.7B-neuropilot-embedding-fp32.bin").write_bytes(b"newer weights")
+    (out / "mtk/mt6991/export-report-16k.json").write_text(json.dumps(new))
+    remote = {
+        "README.md": None,
+        "mtk/mt6991/Qwen3-1.7B-neuropilot-a16w4-8k-chunk1of1.pte": None,
+        "mtk/mt6991/Qwen3-1.7B-neuropilot-embedding-fp32.bin": None,
+        "mtk/mt6991/export-report-8k.json": mtk_window(8192, hashlib.sha256(b"emb").hexdigest()),
+    }
+    hub = FakeHub(remote)
+    monkeypatch.setattr(publish.hub, "api", lambda: hub)
+
+    def fake_download(repo_id, path, revision, token):
+        local = tmp_path / "dl" / path
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(json.dumps(remote[path]))
+        return str(local)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    with pytest.raises(ValueError, match="other published windows depend on"):
+        publish.publish_hf(out, "mtk", "mt6991")
+    assert hub.commits == []

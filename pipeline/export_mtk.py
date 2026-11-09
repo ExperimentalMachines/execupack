@@ -324,6 +324,14 @@ def modal_shape(window: int) -> tuple[int, int] | None:
     return None
 
 
+def script_paths(tool_python: str, weight_dir: Path) -> tuple[str, Path]:
+    """The tool python and the weights' config.json as the script needs them: absolute, because
+    it runs in the run's own copy of the scripts (private_examples), where a relative --work or
+    tool path would point into that copy. A bare command name is left to PATH."""
+    tool = str(Path(tool_python).resolve()) if os.sep in tool_python else tool_python
+    return tool, (weight_dir / "config.json").resolve()
+
+
 def private_examples(examples_dir: Path, work_dir: Path) -> Path:
     """A copy of examples/mediatek (31 MB) in this run's work folder, to run the script in.
 
@@ -601,7 +609,10 @@ def run(
         )  # fmt: skip
         corpus = json.loads(summary_path.read_text(encoding="utf-8"))
 
-    command = export_command(tool_python, plan, recipe, soc, weight_dir / "config.json", dataset)
+    # The script runs in the run's own copy of the scripts, so every path handed to it is absolute:
+    # a relative --work (or tool python) would be read from that copy (codex review of #30).
+    tool, config_path = script_paths(tool_python, weight_dir)
+    command = export_command(tool, plan, recipe, soc, config_path, dataset)
     run_dir = private_examples(examples_dir, work_dir)
     print("==> " + " ".join(command) + f"  (in {run_dir})")
     export_started = time.time()
