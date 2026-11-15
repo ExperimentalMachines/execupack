@@ -31,7 +31,12 @@ def reports(out_dir: Path, backend: str) -> list[Path]:
 
 
 def run(
-    out_dir: Path, backend: str, work_dir: Path, gate_reference: Path | None = None, accept_gate: str | None = None
+    out_dir: Path,
+    backend: str,
+    work_dir: Path,
+    gate_reference: Path | None = None,
+    accept_gate: str | None = None,
+    force: bool = False,
 ) -> dict:
     """Run the smoke test for every window in ``out_dir`` and write the results back.
 
@@ -43,6 +48,11 @@ def run(
     """
     results = []
     gates: list[dict] = []
+    # The runtime that runs the checks. A verdict holds for the runtime that measured it: the
+    # same file decides differently on another release's kernels (Qwen2.5-Math-1.5B passed its
+    # smoke test on 1.5.1 and failed it on 1.6.0, finding 48), so a report verified on another
+    # runtime, or with none recorded, is measured again.
+    runtime = exporting.toolchain()["executorch"]
     for path in reports(out_dir, backend):
         report = json.loads(path.read_text())
         # Verified already, unless a gate is asked for that this report has not passed: a
@@ -60,8 +70,9 @@ def run(
         # And only while the file is the one that was verified: a rebuilt .pte is a new file.
         listed = out_dir / report["files"][0]["path"]
         same = listed.is_file() and exporting.sha256(listed) == report["files"][0].get("sha256")
-        if report.get("smoke") is not None and gated and same:
-            print(f"==> {path.name}: already verified, leaving it")
+        same_runtime = "verified_with" in report and report["verified_with"] == runtime
+        if report.get("smoke") is not None and gated and same and same_runtime and not force:
+            print(f"==> {path.name}: already verified on ExecuTorch {runtime}, leaving it")
             results.append(report["smoke"])
             continue
 
@@ -89,6 +100,10 @@ def run(
             total_params=arch.total_params,
         )
         report["smoke"] = result
+        report["verified_with"] = runtime
+        # A gate measured on another runtime does not describe this one: it is measured again
+        # below or, when no reference is given, dropped rather than kept beside a new smoke result.
+        report.pop("gate", None)
         report["measuring_gate"] = gate.measuring_gate(result.get("stats"))
         if report["measuring_gate"]["prefill_tok_per_sec"]:
             print(

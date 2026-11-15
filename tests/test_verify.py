@@ -49,10 +49,34 @@ def test_a_report_that_passed_both_is_left_alone(tmp_path, reaches_smoke):
     reference = tmp_path / "gate.json"
     reference.write_text("{}")
     measured_against = hashlib.sha256(b"{}").hexdigest()
-    out = write(tmp_path, {"smoke": {"passed": True}, "gate": {"passed": True, "reference_sha256": measured_against}})
+    here = verify.exporting.toolchain()["executorch"]
+    gated = {"passed": True, "reference_sha256": measured_against}
+    out = write(tmp_path, {"smoke": {"passed": True}, "gate": gated, "verified_with": here})
     assert verify.run(out, "xnnpack", tmp_path / "work", gate_reference=reference)["passed"]
-    out_ungated = write(tmp_path / "b", {"smoke": {"passed": True}})
+    out_ungated = write(tmp_path / "b", {"smoke": {"passed": True}, "verified_with": here})
     assert verify.run(out_ungated, "xnnpack", tmp_path / "work")["passed"]
+
+
+@pytest.mark.parametrize("verified_with", ["0.0.1", "missing"])
+def test_a_report_verified_on_another_runtime_is_measured_again(tmp_path, reaches_smoke, verified_with):
+    # A verdict holds for the runtime that measured it (finding 48: a published file passed its
+    # smoke test on 1.5.1 and failed it on 1.6.0); a report from before the field counts as other.
+    reference = tmp_path / "gate.json"
+    reference.write_text("{}")
+    gated = {"passed": True, "reference_sha256": hashlib.sha256(b"{}").hexdigest()}
+    report = {"smoke": {"passed": True}, "gate": gated}
+    if verified_with != "missing":
+        report["verified_with"] = verified_with
+    out = write(tmp_path, report)
+    with pytest.raises(Ran):
+        verify.run(out, "xnnpack", tmp_path / "work", gate_reference=reference)
+
+
+def test_force_measures_a_report_verified_here_again(tmp_path, reaches_smoke):
+    here = verify.exporting.toolchain()["executorch"]
+    out = write(tmp_path, {"smoke": {"passed": True}, "verified_with": here})
+    with pytest.raises(Ran):
+        verify.run(out, "xnnpack", tmp_path / "work", force=True)
 
 
 def test_an_accepted_gate_keeps_its_measured_verdict_and_records_the_reason(tmp_path, monkeypatch):

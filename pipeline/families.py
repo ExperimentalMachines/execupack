@@ -44,7 +44,7 @@ class Family:
 
 
 _NOT_IN_EXPORT_LLM = (
-    "not in ExecuTorch 1.5.1 export_llm's model list; needs a validated export path "
+    "not in ExecuTorch 1.6.0 export_llm's model list; needs a validated export path "
     "(optimum-executorch or params support) before it is published"
 )
 # MediaTek's runner masks attention with an additive -100, not -inf (MaskBuilder, and the
@@ -113,7 +113,7 @@ FAMILIES: tuple[Family, ...] = (
         {"xnnpack": _NOT_IN_EXPORT_LLM, "vulkan": _NOT_IN_EXPORT_LLM, "qnn": _GEMMA2_NO_QNN},
     ),
     # Phi-4-mini: Llama's block with fused q/k/v and gate/up projections (pipeline/convert.py
-    # splits them), partial RoPE on 96 of 128 head dims, and LongRoPE. ExecuTorch 1.5.1 builds
+    # splits them), partial RoPE on 96 of 128 head dims, and LongRoPE. ExecuTorch 1.6.0 builds
     # it from the same transformer (examples/models/phi_4_mini).
     Family("phi4_mini", ("Phi3ForCausalLM",), {"qnn": _PHI4_NO_QNN, "mtk": _PHI4_NO_MTK}),
     Family(
@@ -561,7 +561,7 @@ def xnnpack_plan(family: Family, config: dict) -> XnnpackPlan:
 
 
 def _phi4_mini_plan(c: dict, params: dict) -> XnnpackPlan:
-    """Phi-4-mini's params, as ExecuTorch 1.5.1's examples/models/phi_4_mini/config/config.json
+    """Phi-4-mini's params, as ExecuTorch 1.6.0's examples/models/phi_4_mini/config/config.json
     spells them, from the checkpoint's own config.
 
     LongRoPE (rope.hf_precompute_freqs_cis) divides the inverse frequencies by
@@ -625,7 +625,7 @@ def _lfm3_plan(c: dict) -> XnnpackPlan:
     """LFM3's params for pipeline/lfm3_model.py, from the fields of ExecuTorch's ModelArgs.
 
     ``rope_theta`` is the global layers' and ``local_rope_theta`` the windowed layers' (the
-    field 1.5.1 declares for Gemma 3 and never reads); ``partial_rotary_factor`` applies to
+    field 1.5.1 and 1.6.0 declare for Gemma 3 and never read); ``partial_rotary_factor`` applies to
     the global layers only, as in the checkpoint's rope_parameters. The convolution width
     rides in ``attention_kwargs``, which upstream passes to attention constructors and
     ignores: without pipeline/lfm3_model.py the width-7 convolution weights do not fit

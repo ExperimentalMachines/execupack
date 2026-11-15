@@ -3,7 +3,7 @@
 Byte-level checks used for the 2026-11-09 GPTQ rollout (docs/PLAN.md, Known limits; research
 findings 43-45). Not wired into the pipeline or CI yet.
 
-- `ptecodes.py`: reads every int4 linear out of a `.pte` (ExecuTorch 1.5.1), in execution order:
+- `ptecodes.py`: reads every int4 linear out of a `.pte` (ExecuTorch 1.5.1 and 1.6.0), in execution order:
   XNNPACK `qbint4` filters of fully-connected nodes (delegate calls in program order), Vulkan
   `et_vk.linear_dq8ca_q4gsw` weights, scales and per-group code sums.
 - `codesmatch.py <file.pte> <codes.pt>`: exit 0 only if every int4 linear equals the solve's codes

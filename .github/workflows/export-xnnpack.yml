@@ -57,6 +57,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-light
+      # Before any solve or export: a run that is to publish files newer than the apps' runtime
+      # would only be refused at its publish step, after hours of work (APP_RUNTIME_VERSION).
+      - name: Refuse to build what could not be published
+        if: ${{ inputs.publish_hf || inputs.publish_release }}
+        run: python3 -m pipeline publish-hold --backend xnnpack
       - id: contexts
         env:
           CONTEXTS: ${{ inputs.contexts }}

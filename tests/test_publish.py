@@ -723,3 +723,67 @@ def test_a_clash_with_another_backends_report_is_refused_even_with_replace_share
     with pytest.raises(ValueError, match="another backend's reports"):
         publish.publish_hf(out, "mtk", "mt6991", replace_shared=True)
     assert hub.commits == []
+
+
+def test_a_file_newer_than_the_apps_runtime_is_held_back(monkeypatch):
+    # EXECUTORCH_VERSION may move ahead of the apps; APP_RUNTIME_VERSION keeps its files off the
+    # Hub and the releases until both apps ship that runtime (config/versions.env).
+    import dataclasses
+
+    from pipeline import settings
+
+    held = dataclasses.replace(settings.load(), app_runtime_version="1.5.1")
+    monkeypatch.setattr(settings, "load", lambda: held)
+    newer = {**report(2048), "toolchain": {"executorch": "1.6.0"}}
+    with pytest.raises(ValueError, match="newer than the apps' runtime 1.5.1"):
+        publish.require_publishable(newer)
+    for older in ("1.5.1", "1.4.0", "1.5.0"):
+        publish.require_publishable({**report(2048), "toolchain": {"executorch": older}})
+    with pytest.raises(ValueError, match="names no ExecuTorch release"):
+        publish.require_publishable({**report(2048), "toolchain": {}})
+    moved = dataclasses.replace(held, app_runtime_version="1.6.0")
+    monkeypatch.setattr(settings, "load", lambda: moved)
+    publish.require_publishable(newer)
+
+
+def test_this_tree_holds_its_own_exports_until_the_apps_move():
+    # The exporter is on 1.6.0 and the apps on 1.5.1: a fresh CPU/GPU report must be refused.
+    from pipeline import settings
+
+    cfg = settings.load()
+    assert settings.release(cfg.app_runtime_version) <= settings.release(cfg.executorch_version)
+    fresh = {**report(2048), "toolchain": {"executorch": cfg.executorch_version}}
+    if settings.release(cfg.executorch_version) > settings.release(cfg.app_runtime_version):
+        with pytest.raises(ValueError, match="hold it until both apps ship"):
+            publish.require_publishable(fresh)
+    else:
+        publish.require_publishable(fresh)
+
+
+def test_release_versions_parse():
+    from pipeline import settings
+
+    assert settings.release("1.10.0") > settings.release("1.9.3")
+    assert settings.release("1.6.0a0+git1234") < settings.release("1.6.0")
+    # The hold compares releases: a pre-release or dev build of 1.6.0 is 1.6.0, and a post
+    # release of 1.5.1 is 1.5.1.
+    assert settings.newer_release("1.6.0", "1.5.1")
+    assert settings.newer_release("1.6.0a0+git1234", "1.5.1")
+    assert settings.newer_release("1.6.0.dev20261101", "1.5.1")
+    assert not settings.newer_release("1.5.1.post1", "1.5.1")
+    assert not settings.newer_release("1.5.1+cpu", "1.5.1")
+    assert not settings.newer_release("1.4.0", "1.5.1")
+    with pytest.raises(ValueError):
+        settings.release("main")
+
+
+def test_the_hold_names_the_backends_it_stops():
+    from pipeline import settings
+
+    versions = settings.read_env_file(settings.CONFIG_DIR / "versions.env")
+    for backend, key in settings.EXPORTER_VERSION_KEYS.items():
+        held = settings.newer_release(versions[key], versions["APP_RUNTIME_VERSION"])
+        assert (settings.publish_hold(backend) is not None) == held, backend
+    # This tree: CPU/GPU on 1.6.0 are held for apps on 1.5.1; the NPU toolchains on 1.5.1 are not.
+    assert settings.publish_hold("xnnpack") and settings.publish_hold("vulkan")
+    assert settings.publish_hold("qnn") is None and settings.publish_hold("mtk") is None

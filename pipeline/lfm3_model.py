@@ -1,7 +1,8 @@
-"""LFM3 for ExecuTorch's ``export_llm``: the model definition ExecuTorch 1.5.1 does not have.
+"""LFM3 for ExecuTorch's ``export_llm``: the model definition ExecuTorch does not have.
 
 LiquidAI's LFM3-1.7B (2026-10-23) is LFM2's hybrid grown three ways, none of which the
-1.5.1 transformer can express (examples/models/llama/llama_transformer.py, model_args.py):
+1.5.1 transformer can express (examples/models/llama/llama_transformer.py, model_args.py).
+In 1.5.1:
 
 * A third layer type. Of 24 layers, 13 are gated short convolutions, 6 attend globally and
   5 attend over a sliding window of 256 tokens. ``construct_transformer`` knows ``conv`` and
@@ -14,6 +15,14 @@ LiquidAI's LFM3-1.7B (2026-10-23) is LFM2's hybrid grown three ways, none of whi
   ``use_attn_o_gate`` is per element), RMSNorm after each operator and after each feed-forward
   ("sandwich" norms; 1.5.1 declares ``post_attention_norm`` and never reads it), and a
   width-7 convolution (``ShortConvBlock`` hard-codes 3).
+
+1.6.0 grew three of these pieces: ``AttentionMHA`` masks ``sliding_attention`` layers to
+``sliding_window`` and gives them a ``RingKVCache``, ``rope_parameters`` builds one RoPE per
+layer type, and ``headwise_attn_output_gate`` is a per-head gate. It still cannot build LFM3:
+``construct_transformer`` builds every ``ShortConvBlock`` at width 3, its only norms after an
+operator are weightless or scale the input (not LFM3's weighted RMSNorm), and its
+``RingKVCache`` is the one described below that a 2,048-token prefill does not fit. This
+definition uses none of the new pieces, so on 1.6.0 it builds the graph it built on 1.5.1.
 
 Everything else is LFM2's, and the parts are ExecuTorch's own where they exist: RMSNorm,
 FeedForward, the KV cache and SDPA modules that ``export_llm`` swaps for its custom ops, the

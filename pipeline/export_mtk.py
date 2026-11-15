@@ -1,11 +1,13 @@
 """Export one HF model to MediaTek NeuroPilot .pte chunks for one Dimensity chip.
 
-Drives ExecuTorch 1.4.0's examples/mediatek LLM scripts, which are not in the executorch
-wheel (the workflow fetches them from the ExecuTorch source at EXECUTORCH_COMMIT), in a
-separate Python 3.10 environment holding MediaTek's mtk_converter and mtk_neuron from the
-NeuroPilot Express SDK. The script quantizes the model (A16W4), cuts it into chunks of equal
-layer counts, and compiles a prompt graph and a one-token generation graph per chunk for the
-chip. Produces, under ``out_dir``:
+Drives ExecuTorch's examples/mediatek LLM scripts, which are not in the executorch wheel
+(the workflow fetches them from the ExecuTorch source at EXECUTORCH_COMMIT), in a separate
+Python 3.10 environment holding MediaTek's mtk_converter and mtk_neuron from the NeuroPilot
+Express SDK. That environment's ExecuTorch is MTK_EXECUTORCH_VERSION (1.5.1), one release
+behind the CPU and GPU backends, because 1.6.0 has no Python 3.10 wheel (config/versions.env).
+The script quantizes the model (A16W4), cuts it into chunks of equal layer counts, and
+compiles a prompt graph and a one-token generation graph per chunk for the chip. Produces,
+under ``out_dir``:
 
     tokenizer.json | tokenizer.model, LICENSE…, NOTICE   (repo root, shared with other backends)
     mtk/<soc>/<name>-neuropilot-a16w4-<window>-chunk<i>of<n>.pte

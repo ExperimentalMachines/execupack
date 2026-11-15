@@ -283,6 +283,19 @@ def test_readme_and_config_for_qnn():
     assert "- qnn" in text
 
 
+@pytest.mark.parametrize("toolchain", ["absent", None])
+def test_a_qnn_report_without_a_toolchain_does_not_stop_the_card(toolchain):
+    # Every publish regenerates the card from every report in the repo: a retained QNN report
+    # missing its toolchain must not stop another backend's publish.
+    report = qnn_report()
+    if toolchain == "absent":
+        del report["toolchain"]
+    else:
+        report["toolchain"] = None
+    text = manifest.readme("experimentalmachines/Qwen3-0.6B-ExecuTorch", [report], [], [])
+    assert "AI Stack License" in text
+
+
 def test_publish_refuses_a_tokenizer_inside_a_backend_folder(tmp_path):
     folder = tmp_path / "qnn" / "sm8650"
     folder.mkdir(parents=True)

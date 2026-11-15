@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pipeline import eligibility, hub, naming
-from pipeline.settings import Settings
+from pipeline.settings import Settings, publish_hold
 
 STATE_VERSION = 1
 # Backend → the workflow that exports it (one run covers every target chip). MediaTek
@@ -203,8 +203,15 @@ def run(
     fetch: Callable[[str, str], hub.SourceModel] = hub.fetch,
     dispatcher: Callable[[str, str, str], None] = gh_dispatch,
     in_flight: Callable[[str], bool] = runs_in_flight,
+    held: Callable[[str], str | None] | None = None,
 ) -> dict:
-    """One watcher pass. Returns a summary; the caller saves ``summary["state"]``."""
+    """One watcher pass. Returns a summary; the caller saves ``summary["state"]``.
+
+    ``held`` (settings.publish_hold by default) names the backends whose exports could not be
+    published today; their stage is passed over and its models stay pending, so they go out
+    once the apps' runtime moves instead of being recorded as dispatched to a refused run.
+    """
+    held = held or publish_hold
     state = load_state(state_path)
     stamp = now()
     summary = {"seeded": 0, "new": [], "backfilled": [], "dispatched": [], "failed": [], "state": None}
@@ -256,6 +263,10 @@ def run(
     budget = max_dispatch
     by_first_seen = sorted(models.items(), key=lambda kv: kv[1].get("first_seen") or "")
     for backend in STAGES:
+        reason = held(backend)
+        if reason:
+            summary.setdefault("held", []).append(f"{backend}: {reason}")
+            continue  # pending stays pending; the later stages need not wait for it
         queue = [
             (model_id, entry)
             for model_id, entry in by_first_seen

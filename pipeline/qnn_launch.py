@@ -10,7 +10,8 @@ puts None at the head of the first rolling window and fails building the tensor 
 object cannot be interpreted as an integer"): every Qwen3 window failed this way on
 2026-10-07. ExecuTorch main falls back to the end-of-text token when bos_id is None
 (examples/models/llama/evaluate/eager_eval.py), as lm_eval's own HFLM does; this is that
-property, set before the script runs. Drop this module when the ExecuTorch pin has the fix.
+property, set before the script runs. ExecuTorch 1.6.0 has the fix; drop this module when the
+Qualcomm toolchain (QNN_EXECUTORCH_VERSION in config/versions.env, still 1.5.1) reaches it.
 """
 
 from __future__ import annotations

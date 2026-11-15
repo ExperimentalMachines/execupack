@@ -102,7 +102,57 @@ class Settings:
     qnn: QnnRecipe
     mtk: MtkRecipe
     executorch_version: str
+    # The oldest runtime the apps ship: nothing built with a newer release may be published.
+    app_runtime_version: str = ""
     modal: ModalSettings | None = None
+
+
+def release(version: str):
+    """An ExecuTorch version, ordered as releases are: 1.6.0a0 < 1.6.0 < 1.6.1 < 1.10.0.
+
+    packaging's Version (huggingface_hub's dependency, so in every environment here), which
+    refuses what is not a version at all rather than guessing.
+    """
+    from packaging.version import Version
+
+    return Version(version.strip())
+
+
+def newer_release(built: str, runtime: str) -> bool:
+    """Whether a file built with ``built`` is from a later release than ``runtime``.
+
+    Compared on the release numbers only (base_version), so a pre-release or development build
+    of 1.6.0 counts as 1.6.0, newer than a 1.5.1 runtime, and a 1.5.1.post1 counts as 1.5.1.
+    """
+    from packaging.version import Version
+
+    return Version(release(built).base_version) > Version(release(runtime).base_version)
+
+
+# Which ExecuTorch each backend's exporter builds with (config/versions.env).
+EXPORTER_VERSION_KEYS = {
+    "xnnpack": "EXECUTORCH_VERSION",
+    "vulkan": "EXECUTORCH_VERSION",
+    "qnn": "QNN_EXECUTORCH_VERSION",
+    "mtk": "MTK_EXECUTORCH_VERSION",
+}
+
+
+def publish_hold(backend: str) -> str | None:
+    """Why ``backend``'s exports cannot be published today, or None when they can.
+
+    A backend whose exporter is a later release than APP_RUNTIME_VERSION, the oldest runtime
+    the apps ship, builds files that publish.require_app_runtime would refuse: the workflow
+    stops before building them and the watcher leaves them pending.
+    """
+    versions = read_env_file(CONFIG_DIR / "versions.env")
+    built, app = versions[EXPORTER_VERSION_KEYS[backend]], versions["APP_RUNTIME_VERSION"]
+    if newer_release(built, app):
+        return (
+            f"{backend} exports with ExecuTorch {built}, newer than the apps' runtime {app} "
+            "(APP_RUNTIME_VERSION in config/versions.env); publishing is held until both apps ship it"
+        )
+    return None
 
 
 def read_env_file(path: Path) -> dict[str, str]:
@@ -186,6 +236,7 @@ def load() -> Settings:
             runner_tiers=runner_tiers(export["mtk"]),
         ),
         executorch_version=versions["EXECUTORCH_VERSION"],
+        app_runtime_version=versions["APP_RUNTIME_VERSION"],
         modal=ModalSettings(
             app=str(raw["modal"]["app"]),
             volume=str(raw["modal"]["volume"]),
