@@ -1,12 +1,13 @@
 """After the rollout: is every file in the rolled-out repos what its report says it is?
 
-    python verify_hub.py <models.json> <collected-dir> <out.json> [--skip MODEL ...]
+    python verify_hub.py <models.json> <collected-dir> <out.json> [--executorch 1.5.1] [--skip MODEL ...]
 
 Per repo, from the Hub, against the byte-check records collected from the boxes
 (<collected>/<box>/gptq-<slug>/codesmatch-*.json and codes.sha256):
 - xnnpack/ and vulkan/ each hold exactly the five windows: one report per window label, and the
   .pte files the reports name are exactly the .pte files in the folder, one each;
-- every report: int4_codes gptq, ExecuTorch 1.5.1, the pinned source revision, a file sha256
+- every report: int4_codes gptq, the rollout's ExecuTorch (--executorch, default 1.5.1, the
+  2026-11-09 rollout's), the pinned source revision, a file sha256
   equal to the Hub's LFS sha256, and a measured, passing gate (XNNPACK: graded > 0, fp32 and
   export means present, no override) or a Vulkan gate proxy whose verdict equals the published
   XNNPACK report's of the same window and whose sha256 is that XNNPACK file;
@@ -28,6 +29,11 @@ WINDOWS = {"2k": 2048, "4k": 4096, "8k": 8192, "16k": 16384, "32k": 32768}
 GATE_FIELDS = ("passed", "graded", "agreed", "fp32_mean", "export_mean")
 
 args = sys.argv[1:]
+EXECUTORCH = "1.5.1"
+if "--executorch" in args:
+    at = args.index("--executorch")
+    EXECUTORCH = args[at + 1]
+    del args[at : at + 2]
 skip = set(args[args.index("--skip") + 1 :]) if "--skip" in args else set()
 models = [m for m in json.loads(Path(args[0]).read_text()) if m["model"] not in skip]
 collected, out_path = Path(args[1]), Path(args[2])
@@ -149,7 +155,7 @@ for m in models:
                     continue  # the deliberate fp32 files built on 1.4.0, untouched by this rollout
             elif rec.get("int4_codes") != "gptq":
                 problems.append(f"{r}: int4_codes {rec.get('int4_codes')}")
-            if d["toolchain"]["executorch"] != "1.5.1":
+            if d["toolchain"]["executorch"] != EXECUTORCH:
                 problems.append(f"{r}: ExecuTorch {d['toolchain']['executorch']}")
             measured = (
                 (gate or {}).get("passed") is True

@@ -1,5 +1,6 @@
-# Qualcomm QNN export. Same core pins as export-xnnpack.txt; install torch and torchvision
-# from the CPU index first. The executorch Linux x86_64 wheel ships the Qualcomm backend and downloads
+# Qualcomm QNN export, on ExecuTorch 1.5.1 while the other backends build with 1.6.0:
+# QNN_EXECUTORCH_VERSION in config/versions.env says why (1.6.0's QAIRT 2.51 binaries would
+# outrun the apps' QNN runtime). Install torch and torchvision from the CPU index first. The executorch Linux x86_64 wheel ships the Qualcomm backend and downloads
 # the QAIRT SDK version it was built against on first import (config/versions.env).
 torch==2.14.0
 torchao==0.18.0

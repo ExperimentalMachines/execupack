@@ -1,10 +1,12 @@
 # Install torch from the CPU index first (the PyPI Linux wheel pulls ~3 GB of CUDA libs):
-#   pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu
-# ExecuTorch 1.5.1 is built against torch 2.14.0 (torch_pin.py) and torchao 0.18.0.
-torch==2.14.0
+#   pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu
+# ExecuTorch 1.6.0 requires torch 2.15.0 exactly (its wheel's Requires-Dist; torch_pin.py) and
+# torchao >= 0.18.0 (install_requirements.py TORCHAO_MIN_VERSION; 0.18.0 is still the newest).
+# pytorch-tokenizers 1.6.0 is the release cut beside it (2026-10-30, Python >= 3.11).
+torch==2.15.0
 torchao==0.18.0
-executorch==1.5.1
-pytorch-tokenizers==1.5.0
+executorch==1.6.0
+pytorch-tokenizers==1.6.0
 # executorch.extension.llm.runner imports transformers at package import time; the smoke
 # test needs that package for TextLLMRunner. 5.22.1, not 5.17.0: LFM3 has no transformers
 # implementation, and its remote code (configuration_lfm3.py) fails to load under 5.17.0,

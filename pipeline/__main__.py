@@ -61,7 +61,12 @@ def _verify(args) -> int:
     try:
         gate = Path(args.gate) if args.gate else None
         summary = verify_module.run(
-            Path(args.out), args.backend, Path(args.work), gate_reference=gate, accept_gate=args.accept_gate
+            Path(args.out),
+            args.backend,
+            Path(args.work),
+            gate_reference=gate,
+            accept_gate=args.accept_gate,
+            force=args.force,
         )
     except ExportError as error:
         print(f"verify failed: {error}", file=sys.stderr)
@@ -324,6 +329,21 @@ SOLVE_BYTES_PER_PARAM = 12
 SOLVE_FLOOR_BYTES = 16 * 2**30
 
 
+def _publish_hold(args) -> int:
+    """Exit 1 when this backend's exports could not be published today (settings.publish_hold),
+    so a workflow asked to publish stops before it builds anything."""
+    from pipeline import settings
+
+    reason = settings.publish_hold(args.backend)
+    if reason is None:
+        print(f"{args.backend}: publishable")
+        return 0
+    print(
+        f"::error title=Publishing is held::{reason}. Dispatch with publish_hf and publish_release off to build only."
+    )
+    return 1
+
+
 def _solve_memory(args) -> int:
     """MiB for the solve's Modal Sandbox, from the model's parameter count."""
     from pipeline import hub, remote, settings
@@ -502,6 +522,11 @@ def main(argv: list[str] | None = None) -> int:
         metavar="REASON",
         help="publish even if the gate fails, recording this reason beside the measured verdict",
     )
+    verify.add_argument(
+        "--force",
+        action="store_true",
+        help="measure again even if the report was verified on this runtime against this reference",
+    )
     verify.set_defaults(func=_verify)
 
     audit = commands.add_parser("audit", help="gate a file that is already published, without rebuilding it")
@@ -616,6 +641,12 @@ def main(argv: list[str] | None = None) -> int:
         help="xnnpack only: mark each window whose job can also build the Vulkan file, and size it for both",
     )
     export_matrix.set_defaults(func=_export_matrix)
+
+    hold = commands.add_parser(
+        "publish-hold", help="exit 1 if this backend's exports are newer than the apps' runtime (APP_RUNTIME_VERSION)"
+    )
+    hold.add_argument("--backend", required=True, choices=["xnnpack", "vulkan", "qnn", "mtk"])
+    hold.set_defaults(func=_publish_hold)
 
     solve_memory = commands.add_parser("solve-memory", help="MiB to request for the GPTQ solve on Modal")
     solve_memory.add_argument("model")

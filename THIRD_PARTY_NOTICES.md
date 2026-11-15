@@ -78,5 +78,5 @@ from MediaTek Inc. and that no MediaTek SDK or runtime library is included.
 ## ExecuTorch examples/mediatek
 
 `export-mtk.yml` also fetches `examples/mediatek` from the ExecuTorch source at
-`EXECUTORCH_COMMIT` (v1.4.0) at run time; those scripts are © MediaTek Inc., under the
+`EXECUTORCH_COMMIT` (v1.5.1) at run time; those scripts are © MediaTek Inc., under the
 BSD-style license in ExecuTorch's repository root.

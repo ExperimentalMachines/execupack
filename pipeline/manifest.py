@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from pipeline import naming
+from pipeline import naming, settings
 
 # Methods the app reads from config.json before download (openweights ExportConfig.kt),
 # plus the rest of the runtime's LLM metadata, as the .pte reports them.
@@ -87,16 +87,55 @@ def _variants(report: dict) -> list[dict]:
     return variants
 
 
+def _release_order(version) -> tuple:
+    """Sort key: releases in release order, after anything that is not one (a report from an
+    older pipeline, or none at all), which the card and config.json name as they found it."""
+    try:
+        return (1, settings.release(version))
+    except (TypeError, ValueError, AttributeError):
+        return (0, str(version))
+
+
+def runtime_versions(reports: list[dict]) -> list[str]:
+    """The ExecuTorch releases these reports' files were built with, oldest first."""
+    found = {(r.get("toolchain") or {}).get("executorch") for r in reports}
+    return [str(v) for v in sorted(found, key=_release_order)]
+
+
+def one_runtime_for_all(versions: list[str]) -> bool:
+    """Whether one runtime is promised every file: all real releases, within one minor of
+    each other (ExecuTorch promises a runtime its own release's files and the previous minor's)."""
+    try:
+        parsed = [settings.release(v).release + (0, 0) for v in versions]
+    except (TypeError, ValueError, AttributeError):
+        return False
+    oldest, newest = parsed[0], parsed[-1]
+    return oldest[0] == newest[0] and newest[1] - oldest[1] <= 1
+
+
 def backend_config(reports: dict | list[dict]) -> dict:
     """config.json for one backend folder, in the variants form the app reads: one variant
     per exported window, smallest first, from that folder's reports."""
     reports = [reports] if isinstance(reports, dict) else list(reports)
     reports.sort(key=lambda r: r["window"]["context"])
     report = reports[-1]  # the newest layout wins for the shared fields
-    variants = [variant for r in reports for variant in _variants(r)]
+    # Each variant names the release its own file was built with: windows are republished one
+    # at a time, so a folder can hold files from two releases (both apps ignore keys they do
+    # not know, and read the folder's version below).
+    variants = [
+        {**variant, "runtime_version": (r.get("toolchain") or {}).get("executorch")}
+        for r in reports
+        for variant in _variants(r)
+    ]
     config = {
         "runtime": "executorch",
-        "runtime_version": report["toolchain"]["executorch"],
+        # The apps read this one version for every file in the folder (ExecuServe's
+        # CatalogExports) and warn when their runtime is older than it, or more than a minor
+        # newer. Name the newest release in the folder: an installed app that never updates is
+        # still warned about a file newer than its runtime, which is the failure ExecuTorch
+        # promises nothing for. A file too old for a newer app is in each variant's own
+        # runtime_version above, for an app that reads it.
+        "runtime_version": runtime_versions(reports)[-1],
         "backend": report["backend"],
         "target": report.get("target"),
         "tokenizer": report["tokenizer"],
@@ -104,9 +143,10 @@ def backend_config(reports: dict | list[dict]) -> dict:
         "source_revision": report["source"]["sha"],
         "variants": variants,
     }
-    if report["toolchain"].get("qairt"):
+    qairt = (report.get("toolchain") or {}).get("qairt")
+    if qairt:
         # HTP context binaries only load on the QNN runtime they were compiled with.
-        config["qnn_sdk_version"] = report["toolchain"]["qairt"]
+        config["qnn_sdk_version"] = qairt
     if report["backend"] == "mtk":
         config["neuropilot_sdk"] = report["neuropilot"]
     return config
@@ -161,7 +201,18 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
     # and a repo with both kinds promised it for the NPU files too).
     portable = any(r["backend"] in ("xnnpack", "vulkan") for r in reports)
     npu = any(r["backend"] not in ("xnnpack", "vulkan") for r in reports)
-    runtime = f"ExecuTorch {reports[0]['toolchain']['executorch']} runtime"
+    # The releases the CPU and GPU files were built with; the NPU files (built a release behind,
+    # config/versions.env) are not what this sentence covers. ExecuTorch promises a runtime
+    # loads its own release's files and the previous minor's, so one runtime is named only
+    # when every file is within that span.
+    built = runtime_versions([r for r in reports if r["backend"] in ("xnnpack", "vulkan")] or reports)
+    if one_runtime_for_all(built):
+        runtime = f"ExecuTorch {built[-1]} runtime"
+    else:
+        runtime = (
+            f"ExecuTorch runtime from the release its file was built with ({', '.join(built)}: each "
+            "variant's `runtime_version` in `config.json`) or the next"
+        )
     app = "[openweights](https://github.com/alpharomercoma/openweights) Android app"
     if portable and npu:
         use = (
@@ -323,7 +374,7 @@ def readme(repo_id: str, reports: list[dict], hub_tags: list[str], license_files
         out.append("See [`NOTICE`](NOTICE) for the attribution the license requires.")
     qnn = [r for r in reports if r["backend"] == "qnn"]
     if qnn:
-        version = qnn[0]["toolchain"].get("qairt")
+        version = (qnn[0].get("toolchain") or {}).get("qairt")
         out += [
             "",
             f"The `qnn/` folders hold QNN HTP context binaries compiled with the Qualcomm AI Runtime "

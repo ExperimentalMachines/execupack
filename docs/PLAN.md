@@ -19,7 +19,7 @@ for it, Samsung Exynos (ENN). iOS is deferred.
 | Outputs | Hugging Face Hub, GitHub Releases (files ≤ 2 GiB), Actions artifacts |
 | HF layout | One repo per model, backend folders; NPU exports published even though the app can't load them yet |
 | Context window | Every window of 2k/4k/8k/16k/32k, per model and backend, one workflow job each; the app and the benchmarker decide what fits a device. A window the runner cannot build is skipped and reported, not failed |
-| Runtime pin | ExecuTorch **1.5.1** everywhere since 2026-10-04 (1.4.0 before; PR #6, after the apps moved to the 1.5.1 runtime); QAIRT **2.37.0**, unchanged by 1.5.1 |
+| Runtime pin | XNNPACK and Vulkan export with ExecuTorch **1.6.0** (torch 2.15.0) since 2026-11-13; the NPU toolchains stay on **1.5.1**, one minor behind, which a 1.6.0 runtime is promised to load: Qualcomm because 1.6.0 compiles with QAIRT 2.51, newer than the apps' `qnn-runtime` 2.39 (QAIRT stays **2.37.0**), MediaTek because `mtk_converter` is cp310-only and 1.6.0 has no cp310 wheel. The apps still ship 1.5.1, so `APP_RUNTIME_VERSION` (1.5.1) makes `publish` refuse any 1.6.0 file until both apps move; regression measured in finding 48. Before: 1.5.1 everywhere from 2026-10-04 (PR #6), 1.4.0 before that |
 | Vendor SDKs | Downloaded from the vendor at run time, cached only in this repo's Actions cache, never re-hosted |
 
 ## Hugging Face repo layout
@@ -472,6 +472,31 @@ G5, Dimensity 9300+, Exynos 2500; GSM8K, RetrievalQA, IFEval, PopQA, BFCL, Fresh
 | Several context lengths per model | done | one job per window in every export workflow (`contexts` input, default every tier); `publish_hf` keeps sibling windows and merges `variants[]`; the watcher's one dispatch per backend covers the matrix. 32k XNNPACK is out of reach for Qwen3-class models on hosted runners (Known limits) and is recorded as skipped |
 
 ## Known limits
+
+- **ExecuTorch 1.6.0** (2026-11-14, finding 48):
+  - **Held.** The CPU and GPU exporter is on 1.6.0 but the apps still ship 1.5.1, so `publish`
+    refuses every 1.6.0 file (`APP_RUNTIME_VERSION`), and the export workflows stop before
+    building unless both publish inputs are off. Move `APP_RUNTIME_VERSION` once both apps ship
+    1.6.0.
+  - **NPU toolchains.** QNN stays on 1.5.1 and QAIRT 2.37 until the apps' QNN runtime is 2.51 or
+    later; MediaTek stays on 1.5.1 until MediaTek publishes a `mtk_converter` for Python 3.11.
+  - **Two releases back.** A 1.6.0 runtime is promised 1.5.1 files, not the 1.4.0 ones still
+    published (the CPU files of LFM2.5-1.2B-Instruct, LFM2.5-2.6B, their heretic finetunes and
+    SmolLM2-360M-Instruct, and 145 of the 178 MediaTek chunks). On the Python runtime the CPU ones
+    load, and their first token on today's gate prompts is the 1.4.0 runtime's on 79 of 80 rows
+    (78 on 1.5.1). Rebuild them with 1.6.0 if the promise has to hold.
+  - **Smoke test.** Qwen2.5-Math-1.5B's published file fails it on 1.6.0 (no "paris" for the
+    capital of France) while passing its gate; its reply turns on an eighth-token split, and a
+    1.6.0 rebuild passed only because its reply reached "Paris" later. The smoke test asks every
+    model of 500 million parameters or more for "paris" (`smoke.ANSWER_REQUIRED_FROM_PARAMS`).
+  - **Mixed folders.** Windows are republished one at a time, so a folder can hold files from two
+    releases. Each variant in `config.json` names its own `runtime_version`, and the folder names
+    the newest, so an installed app on an older runtime is warned about a newer file. An app that
+    reads only the folder's version is not warned about an older file two releases back (a 1.4.0
+    window beside a 1.6.0 one): ExecuServe reads only the folder's today, and openweights neither.
+  - **Not measured.** The Linux side (Modal image install, the solve on torch 2.15, the x86 C++
+    runner of the verify job), Phi-4-mini's export, a GPU or phone, and the apps' own runtime
+    builds. The first CI run on this pin, built with publishing off, is that test.
 
 - **Phi-4-mini** (2026-11-09):
   - **Recipe.** It is export_llm's `phi_4_mini` with execupack's params and converter

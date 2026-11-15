@@ -15,6 +15,11 @@ zeros whatever the buffer holds, and a continuation reads the state as before.
 An export carrying it advertises ``get_state_reset_at_zero``, which is how a host tells a
 fixed file from one that needs reopening between prompts. Upstream's own Qwen3.5 definition
 already does the equivalent for its recurrent state; only LFM2 was left without it.
+
+ExecuTorch 1.6.0 clears it too (ShortConv._maybe_reset_state, from ShortConvBlock's
+input_pos), but by comparing: ``1 - (input_pos[0] == 0)``. This module still replaces both
+forwards, so 1.6.0 builds the same graph as 1.5.1 did: the clamp above, which every delegate
+implements, and the files already published keep their twin.
 """
 
 import torch

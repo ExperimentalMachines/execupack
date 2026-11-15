@@ -8,6 +8,7 @@ with the fp32 source weights.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -20,6 +21,26 @@ from executorch.exir._serialize._program import deserialize_pte_binary
 ET = Path(list(executorch.__path__)[0])
 
 
+# flatc writes a non-finite double as a bare inf, -inf or nan, which json.loads refuses.
+# ExecuTorch 1.6.0's Vulkan serializer can write one (an attention mask's -inf fill value, say)
+# and reads it back through the same rewrite (vulkan_graph_serialize._flatc_json_to_python_json).
+_JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+_FLATC_NONFINITE = re.compile(r"(?<![\w.])([+-]?)(inf|nan)(?![\w.])")
+
+
+def _python_json(text: str) -> str:
+    def fix(segment: str) -> str:
+        return _FLATC_NONFINITE.sub(
+            lambda m: "NaN" if m.group(2) == "nan" else ("-Infinity" if m.group(1) == "-" else "Infinity"), segment
+        )
+
+    out, last = [], 0
+    for m in _JSON_STRING.finditer(text):  # never inside a string: a shader may be named "inf"
+        out += [fix(text[last : m.start()]), m.group(0)]
+        last = m.end()
+    return "".join(out) + fix(text[last:])
+
+
 def _flatc_json(schema: Path, blob: bytes) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         bin_path = Path(tmp) / "g.bin"
@@ -29,7 +50,7 @@ def _flatc_json(schema: Path, blob: bytes) -> dict:
             check=True,
             capture_output=True,
         )
-        return json.loads((Path(tmp) / "g.json").read_text())
+        return json.loads(_python_json((Path(tmp) / "g.json").read_text()))
 
 
 def load_pte(path: Path):

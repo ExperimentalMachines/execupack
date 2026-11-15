@@ -4,6 +4,8 @@
 # huggingface_hub below the 1.x the pipeline itself uses. Install torch and torchvision from
 # the CPU index first. mtk_converter and mtk_neuron come from the NeuroPilot Express SDK
 # archive at run time (config/versions.env), never from this repository.
+# ExecuTorch 1.5.1, not EXECUTORCH_VERSION: 1.6.0 has no cp310 wheel (MTK_EXECUTORCH_VERSION
+# in config/versions.env says why that is safe). torch and torchao are 1.5.1's.
 torch==2.14.0
 torchao==0.18.0
 executorch==1.5.1

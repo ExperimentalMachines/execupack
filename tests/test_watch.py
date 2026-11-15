@@ -41,6 +41,8 @@ def run(tmp_path, hub, **kwargs):
         fetch=hub.fetch,
         dispatcher=kwargs.pop("dispatcher", hub.dispatch),
         in_flight=kwargs.pop("in_flight", lambda workflow: False),
+        # Nothing held unless a test says so: this tree's own pins hold CPU/GPU publishing.
+        held=kwargs.pop("held", lambda backend: None),
         **kwargs,
     )
     if kwargs.get("dispatch", True):
@@ -203,6 +205,28 @@ def test_gh_dispatch_treats_a_run_in_flight_as_dispatched(monkeypatch):
     watch.gh_dispatch("export-xnnpack.yml", "Qwen/Qwen3-0.6B", "abc")
     assert calls == [["gh", "run", "list"]]
     assert not watch.run_in_flight("export-xnnpack.yml", "Qwen/Qwen3-0.6B-Base", None)
+
+
+def test_a_held_backend_stays_pending_and_the_later_stages_go_ahead(tmp_path):
+    # CPU/GPU exports newer than the apps' runtime would be refused at publish
+    # (settings.publish_hold): not dispatched, not marked dispatched, and not in the way of
+    # the Qualcomm and MediaTek stages, whose toolchains are publishable.
+    hub = FakeHub({"Qwen": []})
+    run(tmp_path, hub)
+    hub.listings["Qwen"] = ["Qwen/Qwen3-0.6B", "Qwen/Qwen3-4B"]  # 0.6B also QNN
+    hold = lambda backend: "held" if backend == "xnnpack" else None  # noqa: E731
+    summary = run(tmp_path, hub, held=hold)
+    assert [d[:2] for d in hub.dispatched] == [("export-qnn.yml", "Qwen/Qwen3-0.6B")]
+    assert summary["stage"] == "qnn" and summary["held"] == ["xnnpack: held"]
+    models = summary["state"]["models"]
+    assert {models[m]["backends"]["xnnpack"]["status"] for m in models if "xnnpack" in models[m]["backends"]} == {
+        "pending"
+    }
+    # The hold lifts: XNNPACK goes out on the next pass, as if it had never waited.
+    hub.dispatched.clear()
+    summary = run(tmp_path, hub)
+    assert {d[0] for d in hub.dispatched} == {"export-xnnpack.yml"} and summary["stage"] == "xnnpack"
+    assert "held" not in summary
 
 
 def test_stages_wait_for_the_previous_backend_to_finish(tmp_path):

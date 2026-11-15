@@ -120,6 +120,7 @@ def require_publishable(report: dict) -> None:
     Vulkan) is published on its smoke test, as before.
     """
     name = report["files"][0]["path"]
+    require_app_runtime(report)
     smoke = report.get("smoke")
     if smoke is None:
         raise ValueError(
@@ -137,6 +138,25 @@ def require_publishable(report: dict) -> None:
                 raise ValueError(f"{name} has GPTQ codes and no passing gate proxy (the XNNPACK file from its codes)")
         elif verdict is None:
             raise ValueError(f"{name} has GPTQ codes and no decision gate: verify it with --gate before publishing")
+
+
+def require_app_runtime(report: dict) -> None:
+    """Refuse a file built with a newer ExecuTorch than the oldest runtime the apps ship.
+
+    The exporter can move ahead of the apps (config/versions.env: EXECUTORCH_VERSION 1.6.0
+    while APP_RUNTIME_VERSION is 1.5.1), but ExecuTorch promises only that an older program
+    loads on a newer runtime. A newer file on the Hub is offered to an app that may load it and
+    misbehave, so it is held back until APP_RUNTIME_VERSION says both apps have moved.
+    """
+    built = (report.get("toolchain") or {}).get("executorch")
+    app = settings.load().app_runtime_version
+    if not built:
+        raise ValueError(f"{report['files'][0]['path']} names no ExecuTorch release in its report")
+    if settings.newer_release(built, app):
+        raise ValueError(
+            f"{report['files'][0]['path']} was built with ExecuTorch {built}, newer than the apps' runtime "
+            f"{app} (APP_RUNTIME_VERSION in config/versions.env): hold it until both apps ship {built}"
+        )
 
 
 def require_twin_on_hub(

@@ -133,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--lfm3",
         action="store_true",
-        help="build LFM3 params with pipeline/lfm3_model.py, the definition ExecuTorch 1.5.1 lacks",
+        help="build LFM3 params with pipeline/lfm3_model.py, the definition ExecuTorch lacks (1.5.1 and 1.6.0)",
     )
     args = parser.parse_args(argv)
 
